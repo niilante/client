@@ -1103,7 +1103,7 @@ func (h *chatLocalHandler) postAttachmentLocal(ctx context.Context, arg postAtta
 		ctx = s3.NewFakeS3Context(ctx)
 	}
 	chatUI := h.getChatUI(arg.SessionID)
-	progress := func(bytesComplete, bytesTotal int) {
+	progress := func(bytesComplete, bytesTotal int64) {
 		parg := chat1.ChatAttachmentUploadProgressArg{
 			SessionID:     arg.SessionID,
 			BytesComplete: bytesComplete,
@@ -1237,7 +1237,7 @@ func (h *chatLocalHandler) postAttachmentLocalInOrder(ctx context.Context, arg p
 		ctx = s3.NewFakeS3Context(ctx)
 	}
 	chatUI := h.getChatUI(arg.SessionID)
-	progress := func(bytesComplete, bytesTotal int) {
+	progress := func(bytesComplete, bytesTotal int64) {
 		parg := chat1.ChatAttachmentUploadProgressArg{
 			SessionID:     arg.SessionID,
 			BytesComplete: bytesComplete,
@@ -1445,7 +1445,7 @@ func (h *chatLocalHandler) downloadAttachmentLocal(ctx context.Context, arg down
 	var identBreaks []keybase1.TLFIdentifyFailure
 	ctx = chat.Context(ctx, arg.IdentifyBehavior, &identBreaks, h.identNotifier)
 	chatUI := h.getChatUI(arg.SessionID)
-	progress := func(bytesComplete, bytesTotal int) {
+	progress := func(bytesComplete, bytesTotal int64) {
 		parg := chat1.ChatAttachmentDownloadProgressArg{
 			SessionID:     arg.SessionID,
 			BytesComplete: bytesComplete,
