@@ -38,7 +38,7 @@ func (c *CmdDeviceList) Run() error {
 	if err != nil {
 		return err
 	}
-	if err := RegisterProtocols(nil); err != nil {
+	if err := RegisterProtocolsWithContext(nil, c.G()); err != nil {
 		return err
 	}
 
@@ -51,7 +51,7 @@ func (c *CmdDeviceList) Run() error {
 }
 
 func (c *CmdDeviceList) output(devs []keybase1.Device) {
-	w := GlobUI.DefaultTabWriter()
+	w := DefaultTabWriter(c.G())
 	fmt.Fprintf(w, "Name\tType\tID\tCreated\tLast Used\n")
 	fmt.Fprintf(w, "==========\t==========\t==========\t==========\t==========\n")
 	for _, v := range devs {

@@ -4,8 +4,6 @@
 package service
 
 import (
-	"os"
-
 	"golang.org/x/net/context"
 
 	"github.com/keybase/client/go/libkb"
@@ -22,7 +20,7 @@ type SessionHandler struct {
 // NewSessionHandler creates a SessionHandler for the xp transport.
 func NewSessionHandler(xp rpc.Transporter, g *libkb.GlobalContext) *SessionHandler {
 	return &SessionHandler{
-		BaseHandler:  NewBaseHandler(xp),
+		BaseHandler:  NewBaseHandler(g, xp),
 		Contextified: libkb.NewContextified(g),
 	}
 }
@@ -31,54 +29,40 @@ func NewSessionHandler(xp rpc.Transporter, g *libkb.GlobalContext) *SessionHandl
 // the user isn't logged in, it returns libkb.NoSessionError.
 //
 // This function was modified to use cached information instead
-// of loading the full self user and possibliy running sesscheck.
-// The only potential problem with that is that the session token
-// could be stale.  However, KBFS reports that they don't use
-// the session token, so not an issue currently.
-func (h *SessionHandler) CurrentSession(_ context.Context, sessionID int) (keybase1.Session, error) {
+// of loading the full self user.
+//
+// This does do a full call to sesscheck and ensures that the
+// session token is valid.
+func (h *SessionHandler) CurrentSession(ctx context.Context, sessionID int) (keybase1.Session, error) {
 	var s keybase1.Session
-	var uid keybase1.UID
-	var username libkb.NormalizedUsername
-	var token string
-	var sibkey, subkey libkb.GenericKey
-	var err error
-	aerr := h.G().LoginState().Account(func(a *libkb.Account) {
-		_, err = a.LoggedInProvisioned()
-		if err != nil {
-			return
-		}
-		uid = a.G().ActiveDevice.UID()
-		username = a.G().Env.GetUsername()
-		token = a.LocalSession().GetToken()
-		sibkey, err = a.G().ActiveDevice.SigningKey()
-		if err != nil {
-			return
-		}
-		subkey, err = a.G().ActiveDevice.EncryptionKey()
-		if err != nil {
-			return
-		}
-	}, "Service - SessionHandler - CurrentSession")
-	if aerr != nil {
-		return s, aerr
+
+	nist, uid, _, err := h.G().ActiveDevice.NISTAndUIDDeviceID(ctx)
+	if nist == nil {
+		return s, libkb.NoSessionError{}
 	}
 	if err != nil {
-		if _, ok := err.(libkb.LoginRequiredError); ok {
-			return s, libkb.NoSessionError{}
-		}
-		if os.IsNotExist(err) {
-			return s, libkb.NoSessionError{}
-		}
-		if _, ok := err.(libkb.NotFoundError); ok {
-			return s, libkb.NoSessionError{}
-		}
 		return s, err
 	}
+
+	un, err := h.G().GetUPAKLoader().LookupUsername(ctx, uid)
+	if err != nil {
+		return s, err
+	}
+	sibkey, err := h.G().ActiveDevice.SigningKey()
+	if err != nil {
+		return s, err
+	}
+	subkey, err := h.G().ActiveDevice.EncryptionKey()
+	if err != nil {
+		return s, err
+	}
+
 	s.Uid = uid
-	s.Username = username.String()
-	s.Token = token
+	s.Username = un.String()
+	s.Token = nist.Token().String()
 	s.DeviceSubkeyKid = subkey.GetKID()
 	s.DeviceSibkeyKid = sibkey.GetKID()
+
 	return s, nil
 }
 

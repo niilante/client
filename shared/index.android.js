@@ -1,8 +1,35 @@
 // @flow
 // React-native tooling assumes this file is here, so we just require our real entry point
-import 'core-js/es6/object'  // required for babel-plugin-transform-builtin-extend in RN Android
-import 'core-js/es6/array'  // required for emoji-mart in RN Android
-import 'core-js/es6/string'  // required for emoji-mart in RN Android
-import {load} from './index.native'
+import './app/globals.native'
+import {NativeModules} from 'react-native'
+import {_setSystemIsDarkMode, _setSystemSupported, _setDarkModePreference} from './styles/dark-mode'
 
-load()
+// Load storybook or the app
+if (__STORYBOOK__) {
+  const load = require('./storybook/index.native').default
+  load()
+} else {
+  const NativeAppearance = NativeModules.Appearance
+
+  if (NativeAppearance) {
+    _setSystemIsDarkMode(NativeAppearance.initialColorScheme === 'dark')
+    _setSystemSupported(NativeAppearance.supported === '1')
+  }
+
+  const NativeEngine = NativeModules.KeybaseEngine
+  try {
+    const obj = JSON.parse(NativeEngine.guiConfig)
+    if (obj && obj.ui) {
+      const dm = obj.ui.darkMode
+      switch (dm) {
+        case 'system': // fallthrough
+        case 'alwaysDark': // fallthrough
+        case 'alwaysLight':
+          _setDarkModePreference(dm)
+          break
+      }
+    }
+  } catch (_) {}
+  const {load} = require('./app/index.native')
+  load()
+}

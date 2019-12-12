@@ -10,22 +10,24 @@
 package engine
 
 import (
+	"strings"
+
 	"github.com/keybase/client/go/libkb"
 )
 
 // loginLoadUser is an engine.
 type loginLoadUser struct {
 	libkb.Contextified
-	user            *libkb.User
-	usernameOrEmail string
+	user     *libkb.User
+	username string
 }
 
-// newLoginLoadUser creates a loginLoadUser engine.
-// usernameOrEmail is optional.
-func newLoginLoadUser(g *libkb.GlobalContext, usernameOrEmail string) *loginLoadUser {
+// newLoginLoadUser creates a loginLoadUser engine. `username` argument is
+// optional.
+func newLoginLoadUser(g *libkb.GlobalContext, username string) *loginLoadUser {
 	return &loginLoadUser{
-		Contextified:    libkb.NewContextified(g),
-		usernameOrEmail: usernameOrEmail,
+		Contextified: libkb.NewContextified(g),
+		username:     strings.TrimSpace(username),
 	}
 }
 
@@ -53,23 +55,27 @@ func (e *loginLoadUser) SubConsumers() []libkb.UIConsumer {
 }
 
 // Run starts the engine.
-func (e *loginLoadUser) Run(ctx *Context) error {
-	username, err := e.findUsername(ctx)
+func (e *loginLoadUser) Run(m libkb.MetaContext) (err error) {
+	defer m.Trace("loginLoadUser#Run", func() error { return err })()
+
+	var username string
+	username, err = e.findUsername(m)
 	if err != nil {
 		return err
 	}
 
-	e.G().Log.Debug("loginLoadUser: found username %q", username)
+	m.Debug("loginLoadUser: found username %q", username)
 
-	arg := libkb.NewLoadUserByNameArg(e.G(), username)
-	arg.PublicKeyOptional = true
+	// NOTE(max) 2018-05-09: ForceReload since older versions of cached users don't
+	// have salt stored, ad we need it in DeviceWrap to write out the config file.
+	arg := libkb.NewLoadUserArgWithMetaContext(m).WithName(username).WithPublicKeyOptional().WithForceReload()
 	user, err := libkb.LoadUser(arg)
 	if err != nil {
 		return err
 	}
 	e.user = user
 
-	e.G().Log.Debug("loginLoadUser: found user %s for username %q", e.user.GetUID(), username)
+	m.Debug("loginLoadUser: found user %s for username %q", e.user.GetUID(), username)
 
 	return nil
 }
@@ -78,47 +84,34 @@ func (e *loginLoadUser) User() *libkb.User {
 	return e.user
 }
 
-func (e *loginLoadUser) findUsername(ctx *Context) (string, error) {
-	if len(e.usernameOrEmail) == 0 {
-		if err := e.prompt(ctx); err != nil {
+func (e *loginLoadUser) findUsername(m libkb.MetaContext) (string, error) {
+	if len(e.username) == 0 {
+		if err := e.prompt(m); err != nil {
 			return "", err
 		}
 	}
 
-	if len(e.usernameOrEmail) == 0 {
+	if len(e.username) == 0 {
 		return "", libkb.NoUsernameError{}
 	}
 
-	if libkb.CheckUsername.F(e.usernameOrEmail) {
-		return e.usernameOrEmail, nil
+	if !libkb.CheckUsername.F(e.username) {
+		// Username is not valid:
+		if libkb.CheckEmail.F(e.username) {
+			// It's an e-mail, that we don't support anymore (CORE-10470).
+			return "", libkb.NewBadUsernameErrorWithFullMessage("Logging in with e-mail address is not supported")
+		}
+		return "", libkb.NewBadUsernameError(e.username)
 	}
 
-	if !libkb.CheckEmail.F(e.usernameOrEmail) {
-		return "", libkb.BadNameError(e.usernameOrEmail)
-	}
-
-	// looks like an email address
-	e.G().Log.Debug("%q looks like an email address, must get login session to get user", e.usernameOrEmail)
-	// need to login with it in order to get the username
-	var username string
-	var afterLogin = func(lctx libkb.LoginContext) error {
-		username = lctx.LocalSession().GetUsername().String()
-		return nil
-	}
-	if err := e.G().LoginState().VerifyEmailAddress(e.usernameOrEmail, ctx.SecretUI, afterLogin); err != nil {
-		return "", err
-	}
-
-	e.G().Log.Debug("VerifyEmailAddress %q => %q", e.usernameOrEmail, username)
-
-	return username, nil
+	return e.username, nil
 }
 
-func (e *loginLoadUser) prompt(ctx *Context) error {
-	res, err := ctx.LoginUI.GetEmailOrUsername(ctx.GetNetContext(), 0)
+func (e *loginLoadUser) prompt(m libkb.MetaContext) error {
+	res, err := m.UIs().LoginUI.GetEmailOrUsername(m.Ctx(), 0)
 	if err != nil {
 		return err
 	}
-	e.usernameOrEmail = res
+	e.username = res
 	return nil
 }

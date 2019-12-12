@@ -41,6 +41,11 @@ type Device struct {
 	MTime       keybase1.Time     `json:"mtime"`
 }
 
+type DeviceWithDeviceNumber struct {
+	*Device
+	DeviceNumberOfType int
+}
+
 // NewPaperDevice creates a new paper backup key device
 func NewPaperDevice(passphrasePrefix string) (*Device, error) {
 	did, err := NewDeviceID()
@@ -94,7 +99,7 @@ func (d *Device) Export(lt LinkType) (*jsonw.Wrapper, error) {
 		return nil, err
 	}
 
-	if lt == DelegationTypeSubkey {
+	if lt == LinkType(DelegationTypeSubkey) {
 		// subkeys shouldn't have name or type
 		if err := dw.DeleteKey("name"); err != nil {
 			return nil, err
@@ -105,8 +110,14 @@ func (d *Device) Export(lt LinkType) (*jsonw.Wrapper, error) {
 	}
 
 	// These were being set to 0, so don't include them
-	dw.DeleteKey("mtime")
-	dw.DeleteKey("ctime")
+	err = dw.DeleteKey("mtime")
+	if err != nil {
+		return nil, err
+	}
+	err = dw.DeleteKey("ctime")
+	if err != nil {
+		return nil, err
+	}
 
 	return dw, nil
 }
@@ -117,6 +128,26 @@ func (d *Device) ProtExport() *keybase1.Device {
 		DeviceID: d.ID,
 		CTime:    d.CTime,
 		MTime:    d.MTime,
+	}
+	if d.Description != nil {
+		ex.Name = *d.Description
+	}
+	if d.Status != nil {
+		ex.Status = *d.Status
+	}
+	if d.Kid.Exists() {
+		ex.VerifyKey = d.Kid
+	}
+	return ex
+}
+
+func (d DeviceWithDeviceNumber) ProtExportWithDeviceNum() *keybase1.Device {
+	ex := &keybase1.Device{
+		Type:               d.Type,
+		DeviceID:           d.ID,
+		CTime:              d.CTime,
+		MTime:              d.MTime,
+		DeviceNumberOfType: d.DeviceNumberOfType,
 	}
 	if d.Description != nil {
 		ex.Name = *d.Description

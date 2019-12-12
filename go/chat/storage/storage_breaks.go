@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/keybase/client/go/chat/globals"
 	"github.com/keybase/client/go/chat/utils"
 	"github.com/keybase/client/go/libkb"
 	"github.com/keybase/client/go/protocol/chat1"
@@ -11,18 +12,18 @@ import (
 )
 
 type breakTracker struct {
-	libkb.Contextified
+	globals.Contextified
 	utils.DebugLabeler
 }
 
-func newBreakTracker(g *libkb.GlobalContext) *breakTracker {
+func newBreakTracker(g *globals.Context) *breakTracker {
 	return &breakTracker{
-		Contextified: libkb.NewContextified(g),
-		DebugLabeler: utils.NewDebugLabeler(g, "BreakTracker", false),
+		Contextified: globals.NewContextified(g),
+		DebugLabeler: utils.NewDebugLabeler(g.GetLog(), "BreakTracker", false),
 	}
 }
 
-func (b *breakTracker) makeKey(tlfID chat1.TLFID) libkb.DbKey {
+func (b *breakTracker) makeDbKey(tlfID chat1.TLFID) libkb.DbKey {
 	return libkb.DbKey{
 		Typ: libkb.DBChatBlocks,
 		Key: fmt.Sprintf("breaks:%s", tlfID),
@@ -30,9 +31,9 @@ func (b *breakTracker) makeKey(tlfID chat1.TLFID) libkb.DbKey {
 }
 
 func (b *breakTracker) UpdateTLF(ctx context.Context, tlfID chat1.TLFID,
-	breaks []keybase1.TLFIdentifyFailure) error {
-
-	key := b.makeKey(tlfID)
+	breaks []keybase1.TLFIdentifyFailure) (err error) {
+	defer b.Trace(ctx, func() error { return err }, "UpdateTLF(%s)", tlfID)()
+	key := b.makeDbKey(tlfID)
 
 	dat, err := encode(breaks)
 	if err != nil {
@@ -45,9 +46,9 @@ func (b *breakTracker) UpdateTLF(ctx context.Context, tlfID chat1.TLFID,
 	return nil
 }
 
-func (b *breakTracker) IsTLFBroken(ctx context.Context, tlfID chat1.TLFID) (bool, error) {
-
-	key := b.makeKey(tlfID)
+func (b *breakTracker) IsTLFBroken(ctx context.Context, tlfID chat1.TLFID) (res bool, err error) {
+	defer b.Trace(ctx, func() error { return err }, "IsTLFBroken(%s)", tlfID)()
+	key := b.makeDbKey(tlfID)
 	raw, found, err := b.G().LocalChatDb.GetRaw(key)
 	if err != nil {
 		return true, NewInternalError(ctx, b.DebugLabeler, "GetRaw error: %s", err.Error())

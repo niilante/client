@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/keybase/client/go/externals"
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
@@ -19,7 +20,7 @@ type FavoriteAdd struct {
 }
 
 // NewFavoriteAdd creates a FavoriteAdd engine.
-func NewFavoriteAdd(arg *keybase1.FavoriteAddArg, g *libkb.GlobalContext) *FavoriteAdd {
+func NewFavoriteAdd(g *libkb.GlobalContext, arg *keybase1.FavoriteAddArg) *FavoriteAdd {
 	return &FavoriteAdd{
 		arg:             arg,
 		checkInviteDone: make(chan struct{}),
@@ -52,25 +53,21 @@ func (e *FavoriteAdd) SubConsumers() []libkb.UIConsumer {
 }
 
 func (e *FavoriteAdd) WantDelegate(kind libkb.UIKind) bool {
-	if kind == libkb.IdentifyUIKind {
-		return true
-	}
-
-	return false
+	return kind == libkb.IdentifyUIKind
 }
 
 // Run starts the engine.
-func (e *FavoriteAdd) Run(ctx *Context) error {
+func (e *FavoriteAdd) Run(m libkb.MetaContext) error {
 	if e.arg == nil {
 		return fmt.Errorf("FavoriteAdd arg is nil")
 	}
-	_, err := e.G().API.Post(libkb.APIArg{
+	_, err := m.G().API.Post(m, libkb.APIArg{
 		Endpoint:    "kbfs/favorite/add",
 		SessionType: libkb.APISessionTypeREQUIRED,
 		Args: libkb.HTTPArgs{
-			"tlf_name": libkb.S{Val: e.arg.Folder.Name},
-			"private":  libkb.B{Val: e.arg.Folder.Private},
-			"status":   libkb.S{Val: "favorite"},
+			"tlf_name":    libkb.S{Val: e.arg.Folder.Name},
+			"folder_type": libkb.I{Val: int(e.arg.Folder.FolderType)},
+			"status":      libkb.S{Val: "favorite"},
 		},
 	})
 	if err != nil {
@@ -79,7 +76,7 @@ func (e *FavoriteAdd) Run(ctx *Context) error {
 
 	// this should be in its own goroutine so that potential
 	// UI calls don't block FavoriteAdd calls
-	go e.checkInviteNeeded(ctx)
+	go func() { _ = e.checkInviteNeeded(m) }()
 
 	return nil
 }
@@ -89,7 +86,7 @@ func (e *FavoriteAdd) Wait() {
 	<-e.checkInviteDone
 }
 
-func (e *FavoriteAdd) checkInviteNeeded(ctx *Context) error {
+func (e *FavoriteAdd) checkInviteNeeded(m libkb.MetaContext) error {
 	defer func() {
 		close(e.checkInviteDone)
 	}()
@@ -100,30 +97,30 @@ func (e *FavoriteAdd) checkInviteNeeded(ctx *Context) error {
 	}
 
 	for _, user := range strings.Split(e.arg.Folder.Name, ",") {
-		assertion, ok := libkb.NormalizeSocialAssertion(e.G().MakeAssertionContext(), user)
+		assertion, ok := externals.NormalizeSocialAssertion(m, user)
 		if !ok {
-			e.G().Log.Debug("not a social assertion: %s", user)
+			m.Debug("not a social assertion: %s", user)
 			continue
 		}
 
-		e.G().Log.Debug("social assertion found in FavoriteAdd folder name: %s", assertion)
-		e.G().Log.Debug("requesting an invitation for %s", assertion)
+		m.Debug("social assertion found in FavoriteAdd folder name: %s", assertion)
+		m.Debug("requesting an invitation for %s", assertion)
 
-		inv, err := libkb.GenerateInvitationCodeForAssertion(e.G(), assertion, libkb.InviteArg{})
+		inv, err := libkb.GenerateInvitationCodeForAssertion(m, assertion, libkb.InviteArg{})
 		if err != nil {
 			return err
 		}
 
-		e.G().Log.Debug("invitation requested, informing folder creator with result")
+		m.Debug("invitation requested, informing folder creator with result")
 		arg := keybase1.DisplayTLFCreateWithInviteArg{
 			FolderName:      e.arg.Folder.Name,
 			Assertion:       assertion.String(),
 			SocialAssertion: assertion,
-			IsPrivate:       e.arg.Folder.Private,
+			IsPrivate:       e.arg.Folder.FolderType == keybase1.FolderType_PRIVATE,
 			Throttled:       inv.Throttled,
 			InviteLink:      inv.Link(),
 		}
-		if err := ctx.IdentifyUI.DisplayTLFCreateWithInvite(arg); err != nil {
+		if err := m.UIs().IdentifyUI.DisplayTLFCreateWithInvite(m, arg); err != nil {
 			return err
 		}
 	}

@@ -4,6 +4,7 @@
 package kex2
 
 import (
+	"io"
 	"time"
 
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
@@ -13,8 +14,9 @@ import (
 
 type provisionee struct {
 	baseDevice
-	arg  ProvisioneeArg
-	done chan error
+	arg                ProvisioneeArg
+	done               chan error
+	startedCounterSign chan struct{}
 
 	server       *rpc.Server
 	serverDoneCh <-chan struct{}
@@ -24,10 +26,10 @@ type provisionee struct {
 // management that a provisionee needs to do as part of the protocol.
 type Provisionee interface {
 	GetLogFactory() rpc.LogFactory
-	HandleHello(keybase1.HelloArg) (keybase1.HelloRes, error)
-	HandleHello2(keybase1.Hello2Arg) (keybase1.Hello2Res, error)
-	HandleDidCounterSign([]byte) error
-	HandleDidCounterSign2(keybase1.DidCounterSign2Arg) error
+	HandleHello(ctx context.Context, a keybase1.HelloArg) (keybase1.HelloRes, error)
+	HandleHello2(ctx context.Context, a keybase1.Hello2Arg) (keybase1.Hello2Res, error)
+	HandleDidCounterSign(ctx context.Context, b []byte) error
+	HandleDidCounterSign2(ctx context.Context, a keybase1.DidCounterSign2Arg) error
 }
 
 // ProvisioneeArg provides the details that a provisionee needs in order
@@ -42,8 +44,9 @@ func newProvisionee(arg ProvisioneeArg) *provisionee {
 		baseDevice: baseDevice{
 			start: make(chan struct{}),
 		},
-		arg:  arg,
-		done: make(chan error),
+		arg:                arg,
+		done:               make(chan error),
+		startedCounterSign: make(chan struct{}),
 	}
 	return ret
 }
@@ -57,9 +60,9 @@ func RunProvisionee(arg ProvisioneeArg) error {
 // Hello is called via the RPC server interface by the remote client.
 // It in turn delegates the work to the passed in Provisionee interface,
 // calling HandleHello()
-func (p *provisionee) Hello(_ context.Context, arg keybase1.HelloArg) (res keybase1.HelloRes, err error) {
+func (p *provisionee) Hello(ctx context.Context, arg keybase1.HelloArg) (res keybase1.HelloRes, err error) {
 	close(p.start)
-	res, err = p.arg.Provisionee.HandleHello(arg)
+	res, err = p.arg.Provisionee.HandleHello(ctx, arg)
 	if err != nil {
 		p.done <- err
 	}
@@ -69,9 +72,9 @@ func (p *provisionee) Hello(_ context.Context, arg keybase1.HelloArg) (res keyba
 // Hello2 is called via the RPC server interface by the remote client.
 // It in turn delegates the work to the passed in Provisionee interface,
 // calling HandleHello()
-func (p *provisionee) Hello2(_ context.Context, arg keybase1.Hello2Arg) (res keybase1.Hello2Res, err error) {
+func (p *provisionee) Hello2(ctx context.Context, arg keybase1.Hello2Arg) (res keybase1.Hello2Res, err error) {
 	close(p.start)
-	res, err = p.arg.Provisionee.HandleHello2(arg)
+	res, err = p.arg.Provisionee.HandleHello2(ctx, arg)
 	if err != nil {
 		p.done <- err
 	}
@@ -81,8 +84,9 @@ func (p *provisionee) Hello2(_ context.Context, arg keybase1.Hello2Arg) (res key
 // DidCounterSign is called via the RPC server interface by the remote client.
 // It in turn delegates the work to the passed in Provisionee interface,
 // calling HandleDidCounterSign()
-func (p *provisionee) DidCounterSign(_ context.Context, sig []byte) (err error) {
-	err = p.arg.Provisionee.HandleDidCounterSign(sig)
+func (p *provisionee) DidCounterSign(ctx context.Context, sig []byte) (err error) {
+	p.startedCounterSign <- struct{}{}
+	err = p.arg.Provisionee.HandleDidCounterSign(ctx, sig)
 	p.done <- err
 	return err
 }
@@ -90,8 +94,9 @@ func (p *provisionee) DidCounterSign(_ context.Context, sig []byte) (err error) 
 // DidCounterSign2 is called via the RPC server interface by the remote client.
 // It in turn delegates the work to the passed in Provisionee interface,
 // calling HandleDidCounterSign()
-func (p *provisionee) DidCounterSign2(_ context.Context, arg keybase1.DidCounterSign2Arg) (err error) {
-	err = p.arg.Provisionee.HandleDidCounterSign2(arg)
+func (p *provisionee) DidCounterSign2(ctx context.Context, arg keybase1.DidCounterSign2Arg) (err error) {
+	p.startedCounterSign <- struct{}{}
+	err = p.arg.Provisionee.HandleDidCounterSign2(ctx, arg)
 	p.done <- err
 	return err
 }
@@ -110,31 +115,47 @@ func (p *provisionee) run() (err error) {
 		return err
 	}
 
+	// If we hit a done or a server EOF before we started doing the
+	// countersign operation, then we have to bail out.
 	select {
 	case err := <-p.done:
 		return err
 	case <-p.serverDoneCh:
 		return p.server.Err()
+	case <-p.startedCounterSign:
 	}
+
+	// After we've started the counter sign operation, we don't care if the
+	// provisioner explodes. It makes sense to try to finish, however we can.
+	// Thus, we wait for EOF from the server in a Go routine.
+	go func() {
+		<-p.serverDoneCh
+		tmp := p.server.Err()
+		if tmp != nil && tmp != io.EOF {
+			p.debug("provisionee#run: RPC server died with an error: %s", tmp.Error())
+		}
+	}()
+
+	// Since we've already started the countersign operation, just wait around all
+	// day until it's done.
+	return <-p.done
 }
 
 func (p *provisionee) debug(fmtString string, args ...interface{}) {
-	if p.arg.ProvisionCtx != nil {
-		if log := p.arg.ProvisionCtx.GetLog(); log != nil {
-			log.Debug(fmtString, args...)
-		}
+	if p.arg.LogCtx != nil {
+		p.arg.LogCtx.Debug(fmtString, args...)
 	}
 }
 
 func (p *provisionee) startServer(s Secret) (err error) {
-	if p.conn, err = NewConn(p.arg.Ctx, p.arg.Mr, s, p.deviceID, p.arg.Timeout); err != nil {
+	if p.conn, err = NewConn(p.arg.Ctx, p.arg.LogCtx, p.arg.Mr, s, p.deviceID, p.arg.Timeout); err != nil {
 		return err
 	}
 	prots := []rpc.Protocol{
 		keybase1.Kex2ProvisioneeProtocol(p),
 	}
 	prots = append(prots, keybase1.Kex2Provisionee2Protocol(p))
-	p.xp = rpc.NewTransport(p.conn, p.arg.Provisionee.GetLogFactory(), nil)
+	p.xp = rpc.NewTransport(p.conn, p.arg.Provisionee.GetLogFactory(), nil, rpc.DefaultMaxFrameLength)
 	srv := rpc.NewServer(p.xp, nil)
 	for _, prot := range prots {
 		if err = srv.Register(prot); err != nil {

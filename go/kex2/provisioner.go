@@ -52,10 +52,8 @@ func newProvisioner(arg ProvisionerArg) *provisioner {
 }
 
 func (p *provisioner) debug(fmtString string, args ...interface{}) {
-	if p.arg.ProvisionCtx != nil {
-		if log := p.arg.ProvisionCtx.GetLog(); log != nil {
-			log.Debug(fmtString, args...)
-		}
+	if p.arg.LogCtx != nil {
+		p.arg.LogCtx.Debug(fmtString, args...)
 	}
 }
 
@@ -86,14 +84,11 @@ func (p *provisioner) run() (err error) {
 	if err = p.pickFirstConnection(); err != nil {
 		return err
 	}
-	if err = p.runProtocolWithCancel(); err != nil {
-		return err
-	}
-	return nil
+	return p.runProtocolWithCancel()
 }
 
 func (k KexBaseArg) getDeviceID() (ret DeviceID, err error) {
-	err = k.DeviceID.ToBytes([]byte(ret[:]))
+	err = k.DeviceID.ToBytes(ret[:])
 	return ret, err
 }
 
@@ -120,11 +115,11 @@ func (p *provisioner) pickFirstConnection() (err error) {
 	// If not, we'll just have to wait for a message on p.arg.SecretChannel
 	// and use the provisionee's channel.
 	if len(p.arg.Secret) != 0 {
-		if conn, err = NewConn(p.arg.Ctx, p.arg.Mr, p.arg.Secret, p.deviceID, p.arg.Timeout); err != nil {
+		if conn, err = NewConn(p.arg.Ctx, p.arg.LogCtx, p.arg.Mr, p.arg.Secret, p.deviceID, p.arg.Timeout); err != nil {
 			return err
 		}
 		prot := keybase1.Kex2ProvisionerProtocol(p)
-		xp = rpc.NewTransport(conn, p.arg.Provisioner.GetLogFactory(), nil)
+		xp = rpc.NewTransport(conn, p.arg.Provisioner.GetLogFactory(), nil, rpc.DefaultMaxFrameLength)
 		srv := rpc.NewServer(xp, nil)
 		if err = srv.Register(prot); err != nil {
 			return err
@@ -143,10 +138,10 @@ func (p *provisioner) pickFirstConnection() (err error) {
 		if len(sec) != SecretLen {
 			return ErrBadSecret
 		}
-		if p.conn, err = NewConn(p.arg.Ctx, p.arg.Mr, sec, p.deviceID, p.arg.Timeout); err != nil {
+		if p.conn, err = NewConn(p.arg.Ctx, p.arg.LogCtx, p.arg.Mr, sec, p.deviceID, p.arg.Timeout); err != nil {
 			return err
 		}
-		p.xp = rpc.NewTransport(p.conn, p.arg.Provisioner.GetLogFactory(), nil)
+		p.xp = rpc.NewTransport(p.conn, p.arg.Provisioner.GetLogFactory(), nil, rpc.DefaultMaxFrameLength)
 	case <-p.arg.Ctx.Done():
 		err = ErrCanceled
 	case <-time.After(p.arg.Timeout):
@@ -232,8 +227,5 @@ func (p *provisioner) runProtocolV1() (err error) {
 	if counterSigned, err = p.arg.Provisioner.CounterSign(res); err != nil {
 		return err
 	}
-	if err = cli.DidCounterSign(context.TODO(), counterSigned); err != nil {
-		return err
-	}
-	return nil
+	return cli.DidCounterSign(context.TODO(), counterSigned)
 }

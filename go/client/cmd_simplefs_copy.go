@@ -38,6 +38,7 @@ func NewCmdSimpleFSCopy(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.
 				Contextified: libkb.NewContextified(g),
 				opCanceler:   NewOpCanceler(g),
 			}, "cp", c)
+			cl.SetNoStandalone()
 		},
 		Flags: []cli.Flag{
 			cli.BoolFlag{
@@ -52,6 +53,18 @@ func NewCmdSimpleFSCopy(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.
 				Name:  "f, force",
 				Usage: "force overwrite",
 			},
+			cli.IntFlag{
+				Name:  "rev",
+				Usage: "a revision number for the KBFS folder of the source paths",
+			},
+			cli.StringFlag{
+				Name:  "time",
+				Usage: "a time for the KBFS folder of the source paths (eg \"2018-07-27 22:05\")",
+			},
+			cli.StringFlag{
+				Name:  "reltime, relative-time",
+				Usage: "a relative time for the KBFS folder of the source paths (eg \"5m\")",
+			},
 		},
 	}
 }
@@ -65,7 +78,7 @@ func (c *CmdSimpleFSCopy) Run() error {
 
 	ctx := context.TODO()
 
-	c.G().Log.Debug("SimpleFSCopy (recursive: %v) to: %s", c.recurse, pathToString(c.dest))
+	c.G().Log.Debug("SimpleFSCopy (recursive: %v) to: %s", c.recurse, c.dest)
 
 	destPaths, err := doSimpleFSGlob(ctx, c.G(), cli, c.src)
 	if err != nil {
@@ -78,12 +91,12 @@ func (c *CmdSimpleFSCopy) Run() error {
 	for _, src := range destPaths {
 		var dest keybase1.Path
 		dest, err = makeDestPath(ctx, c.G(), cli, src, c.dest, isDestDir, destPathString)
-		c.G().Log.Debug("SimpleFSCopy %s -> %s, %v", pathToString(src), pathToString(dest), isDestDir)
+		c.G().Log.Debug("SimpleFSCopy %s -> %s, %v", src, dest, isDestDir)
 
 		if err == ErrTargetFileExists {
-			if c.interactive == true {
-				err = doOverwritePrompt(c.G(), pathToString(dest))
-			} else if c.force == true {
+			if c.interactive {
+				err = doOverwritePrompt(c.G(), dest.String())
+			} else if c.force {
 				err = nil
 			}
 		}
@@ -99,9 +112,9 @@ func (c *CmdSimpleFSCopy) Run() error {
 			break
 		}
 
-		opid, err := cli.SimpleFSMakeOpid(ctx)
-		if err != nil {
-			return err
+		opid, err2 := cli.SimpleFSMakeOpid(ctx)
+		if err2 != nil {
+			return err2
 		}
 		c.opCanceler.AddOp(opid)
 
@@ -130,7 +143,7 @@ func (c *CmdSimpleFSCopy) Run() error {
 	return err
 }
 
-// ParseArgv gets the rquired arguments for this command.
+// ParseArgv gets the required arguments for this command.
 func (c *CmdSimpleFSCopy) ParseArgv(ctx *cli.Context) error {
 	var err error
 

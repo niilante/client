@@ -20,7 +20,7 @@ type UserConfigEngine struct {
 	arg *UserConfigEngineArg
 }
 
-func NewUserConfigEngine(arg *UserConfigEngineArg, g *libkb.GlobalContext) *UserConfigEngine {
+func NewUserConfigEngine(g *libkb.GlobalContext, arg *UserConfigEngineArg) *UserConfigEngine {
 	return &UserConfigEngine{
 		arg:          arg,
 		Contextified: libkb.NewContextified(g),
@@ -32,9 +32,7 @@ func (e *UserConfigEngine) Name() string {
 }
 
 func (e *UserConfigEngine) Prereqs() Prereqs {
-	return Prereqs{
-		Session: true,
-	}
+	return Prereqs{Device: true}
 }
 
 func (e *UserConfigEngine) RequiredUIs() []libkb.UIKind {
@@ -45,7 +43,7 @@ func (e *UserConfigEngine) SubConsumers() []libkb.UIConsumer {
 	return nil
 }
 
-func (e *UserConfigEngine) Run(ctx *Context) (err error) {
+func (e *UserConfigEngine) Run(m libkb.MetaContext) (err error) {
 	keys := strings.SplitN(e.arg.Key, ".", 2)
 	if len(keys) < 2 {
 		return fmt.Errorf("Invalid key")
@@ -71,7 +69,7 @@ func (e *UserConfigEngine) Run(ctx *Context) (err error) {
 		}
 
 		var err error
-		_, err = e.G().API.Post(libkb.APIArg{
+		_, err = m.G().API.Post(m, libkb.APIArg{
 			Endpoint:    "image/set_preference",
 			SessionType: libkb.APISessionTypeREQUIRED,
 			Args: libkb.HTTPArgs{

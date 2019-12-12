@@ -6,9 +6,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
+
+	sysunix "golang.org/x/sys/unix"
 )
 
 func handleFusermountStderr(errCh chan<- error) func(line string) (ignore bool) {
@@ -55,9 +58,131 @@ func isBoringFusermountError(err error) bool {
 	return false
 }
 
-func mount(dir string, conf *mountConfig, ready chan<- struct{}, errp *error) (fusefd *os.File, err error) {
+func getDirectMountOptions(dir string, conf *mountConfig, f *os.File) (
+	fsName, options string, flag uintptr, err error) {
+	fsName = conf.options["fsname"]
+
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if !fi.IsDir() {
+		return "", "", 0, fmt.Errorf("%s is not a directory", dir)
+	}
+	mode := fi.Mode() | 040000 // expected directory mode in a C-style stat buf
+
+	// TODO: support more of fusermount's options here.
+	optionsSlice := []string{
+		fmt.Sprintf("fd=%d", f.Fd()),
+		fmt.Sprintf("rootmode=%o", mode&syscall.S_IFMT),
+		"user_id=0",
+		"group_id=0",
+	}
+	if _, ok := conf.options["allow_other"]; ok {
+		optionsSlice = append(optionsSlice, "allow_other")
+	}
+
+	flag = sysunix.MS_NOSUID | sysunix.MS_NODEV
+	if _, ok := conf.options["ro"]; ok {
+		flag |= sysunix.MS_RDONLY
+	}
+
+	return fsName, strings.Join(optionsSlice, ","), flag, nil
+}
+
+func doDirectMountAsRoot(
+	dir string, conf *mountConfig) (f *os.File, err error) {
+	f, err = os.OpenFile("/dev/fuse", os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+
+	fsName, options, flag, err := getDirectMountOptions(dir, conf, f)
+	if err != nil {
+		return nil, err
+	}
+
+	// Make sure the directory is empty before mounting over it.
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	fis, err := d.Readdir(0)
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	err = d.Close()
+	if err != nil {
+		return nil, err
+	}
+	// TODO: Support the `nonempty` config option.
+	if len(fis) != 0 {
+		return nil, fmt.Errorf("%s is non-empty", dir)
+	}
+
+	err = syscall.Mount(fsName, dir, "fuse", flag, options)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// pollHack was written by hanwen for the go-fuse package, and the
+// comment and code below was taken from
+// https://github.com/hanwen/go-fuse/commit/4f10e248ebabd3cdf9c0aa3ae58fd15235f82a79
+//
+// Go 1.9 introduced polling for file I/O. The implementation causes
+// the runtime's epoll to take up the last GOMAXPROCS slot, and if
+// that happens, we won't have any threads left to service FUSE's
+// _OP_POLL request. Prevent this by forcing _OP_POLL to happen, so we
+// can say ENOSYS and prevent further _OP_POLL requests.
+func pollHack(mountPoint string) error {
+	fd, err := syscall.Creat(
+		filepath.Join(mountPoint, PollHackName), syscall.O_CREAT)
+	if err != nil {
+		return err
+	}
+	pollData := []sysunix.PollFd{{
+		Fd:     int32(fd),
+		Events: sysunix.POLLIN | sysunix.POLLPRI | sysunix.POLLOUT,
+	}}
+
+	// Trigger _OP_POLL, so we can say ENOSYS. We don't care about
+	// the return value.
+	sysunix.Poll(pollData, 0)
+	syscall.Close(fd)
+	return nil
+}
+
+func mount(dir string, conf *mountConfig, ready chan<- struct{}, _ *error) (fusefd *os.File, err error) {
+	defer func() {
+		if err == nil {
+			// If we successfully mounted, then force a poll lookup as
+			// one of the first mountpoint requests, so that the
+			// kernel will receive an ENOSYS immediately and not risk
+			// deadlocks on future poll requests coming in via
+			// different threads.
+			go func() {
+				_ = pollHack(dir)
+			}()
+		}
+	}()
+
 	// linux mount is never delayed
 	close(ready)
+
+	if os.Geteuid() == 0 {
+		// If we are running as root, we can avoid the security risks
+		// that come along with exec'ing fusermount and just mount
+		// directly.
+		return doDirectMountAsRoot(dir, conf)
+	}
 
 	fds, err := syscall.Socketpair(syscall.AF_FILE, syscall.SOCK_STREAM, 0)
 	if err != nil {

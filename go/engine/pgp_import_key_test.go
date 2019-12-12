@@ -10,6 +10,8 @@ import (
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 	"github.com/keybase/go-crypto/openpgp/armor"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/net/context"
 )
 
 // TestPGPSavePublicPush runs the PGPSave engine, pushing the
@@ -20,25 +22,26 @@ func TestPGPImportAndExport(t *testing.T) {
 
 	u := CreateAndSignupFakeUser(tc, "login")
 	secui := &libkb.TestSecretUI{Passphrase: u.Passphrase}
-	ctx := &Context{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
 
 	// try all four permutations of push options:
 
-	fp, _, key := armorKey(t, tc, u.Email)
-	eng, err := NewPGPKeyImportEngineFromBytes([]byte(key), false, tc.G)
+	fp, _, key := genPGPKeyAndArmor(t, tc, u.Email)
+	eng, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = RunEngine(eng, ctx); err != nil {
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	if err = RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
 
-	fp, _, key = armorKey(t, tc, u.Email)
-	eng, err = NewPGPKeyImportEngineFromBytes([]byte(key), true, tc.G)
+	fp, _, key = genPGPKeyAndArmor(t, tc, u.Email)
+	eng, err = NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = RunEngine(eng, ctx); err != nil {
+	if err = RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,8 +52,8 @@ func TestPGPImportAndExport(t *testing.T) {
 		},
 	}
 
-	xe := NewPGPKeyExportEngine(arg, tc.G)
-	if err := RunEngine(xe, ctx); err != nil {
+	xe := NewPGPKeyExportEngine(tc.G, arg)
+	if err := RunEngine2(m, xe); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,8 +68,8 @@ func TestPGPImportAndExport(t *testing.T) {
 		},
 	}
 
-	xe = NewPGPKeyExportEngine(arg, tc.G)
-	if err := RunEngine(xe, ctx); err != nil {
+	xe = NewPGPKeyExportEngine(tc.G, arg)
+	if err := RunEngine2(m, xe); err != nil {
 		t.Fatal(err)
 	}
 	if len(xe.Results()) != 0 {
@@ -78,15 +81,158 @@ func TestPGPImportAndExport(t *testing.T) {
 			Secret: false,
 		},
 	}
-	xe = NewPGPKeyExportEngine(arg, tc.G)
-	if err := RunEngine(xe, ctx); err != nil {
+	xe = NewPGPKeyExportEngine(tc.G, arg)
+	if err := RunEngine2(m, xe); err != nil {
 		t.Fatal(err)
 	}
 	if len(xe.Results()) != 2 {
 		t.Fatalf("Expected two keys back out; got %d", len(xe.Results()))
 	}
+}
 
-	return
+// TestPGPImportPrivImport - import the same key twice, only importing the
+// private key the second time / on the second device (CORE-10562).
+func TestPGPImportPrivImport(t *testing.T) {
+	user, dev1, dev2, cleanup := SetupTwoDevices(t, "login")
+	defer cleanup()
+
+	secui := &libkb.TestSecretUI{Passphrase: user.Passphrase}
+	uis := libkb.UIs{LogUI: dev1.G.UI.GetLogUI(), SecretUI: secui}
+
+	// Import a private key into dev1
+	fp, _, key := genPGPKeyAndArmor(t, dev1, user.Email)
+	eng, err := NewPGPKeyImportEngineFromBytes(dev1.G, []byte(key), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMetaContextForTest(dev1).WithUIs(uis)
+	if err = RunEngine2(m, eng); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make sure that we've imported it successfully
+	xe := NewPGPKeyExportEngine(dev1.G, keybase1.PGPExportArg{
+		Options: keybase1.PGPQuery{
+			Secret: true,
+			Query:  fp.String(),
+		},
+	})
+	if err := RunEngine2(m, xe); err != nil {
+		t.Fatal(err)
+	}
+	if len(xe.Results()) != 1 {
+		t.Fatalf("Expected 1 key back out")
+	}
+
+	// Make sure that we only have a public key on dev2
+	uis = libkb.UIs{LogUI: dev2.G.UI.GetLogUI(), SecretUI: secui}
+	m = NewMetaContextForTest(dev2).WithUIs(uis)
+
+	xe = NewPGPKeyExportEngine(dev2.G, keybase1.PGPExportArg{
+		Options: keybase1.PGPQuery{
+			Secret: true,
+			Query:  fp.String(),
+		},
+	})
+	if err := RunEngine2(m, xe); err != nil {
+		t.Fatal(err)
+	}
+	if len(xe.Results()) != 0 {
+		t.Fatalf("Expected 0 keys back out")
+	}
+	xe = NewPGPKeyExportEngine(dev2.G, keybase1.PGPExportArg{
+		Options: keybase1.PGPQuery{
+			Secret: false,
+			Query:  fp.String(),
+		},
+	})
+	if err := RunEngine2(m, xe); err != nil {
+		t.Fatal(err)
+	}
+	if len(xe.Results()) != 1 {
+		t.Fatalf("Expected 1 key back out")
+	}
+
+	// Run import on dev2
+	eng, err = NewPGPKeyImportEngineFromBytes(dev2.G, []byte(key), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = RunEngine2(m, eng); err != nil {
+		t.Fatal(err)
+	}
+
+	// Secret key should be present
+	xe = NewPGPKeyExportEngine(dev1.G, keybase1.PGPExportArg{
+		Options: keybase1.PGPQuery{
+			Secret: true,
+			Query:  fp.String(),
+		},
+	})
+	if err := RunEngine2(m, xe); err != nil {
+		t.Fatal(err)
+	}
+	if len(xe.Results()) != 1 {
+		t.Fatalf("Expected 1 key back out")
+	}
+	xe = NewPGPKeyExportEngine(dev1.G, keybase1.PGPExportArg{
+		Options: keybase1.PGPQuery{
+			Secret: false,
+			Query:  fp.String(),
+		},
+	})
+	if err := RunEngine2(m, xe); err != nil {
+		t.Fatal(err)
+	}
+	if len(xe.Results()) != 1 {
+		t.Fatalf("Expected 1 key back out")
+	}
+}
+
+func TestPGPImportLocalPrivateThenServer(t *testing.T) {
+	tc := SetupEngineTest(t, "pgpsave")
+	defer tc.Cleanup()
+
+	user := CreateAndSignupFakeUser(tc, "login")
+	secui := &libkb.TestSecretUI{Passphrase: user.Passphrase}
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
+
+	_, _, key := genPGPKeyAndArmor(t, tc, user.Email)
+
+	// Import a private key locally first.
+	eng, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), false /* pushSecret*/)
+	require.NoError(t, err)
+	mctx := NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(mctx, eng)
+	require.NoError(t, err)
+
+	// Can we import locally twice?
+	eng, err = NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), false /* pushSecret*/)
+	require.NoError(t, err)
+	mctx = NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(mctx, eng)
+	require.NoError(t, err)
+
+	kid := eng.GetKID()
+
+	ss, err := mctx.ActiveDevice().SyncSecretsForce(mctx)
+	require.NoError(t, err)
+	_, ok := ss.FindPrivateKey(kid.String())
+	require.False(t, ok)
+
+	// Try to import with push secret afterwards - user also wants
+	// to have this key available online.
+	eng, err = NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), true /* pushSecret*/)
+	require.NoError(t, err)
+	mctx = NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(mctx, eng)
+	require.NoError(t, err)
+
+	ss, err = mctx.ActiveDevice().SyncSecretsForce(mctx)
+	require.NoError(t, err)
+	privKey, ok := ss.FindPrivateKey(kid.String())
+	require.True(t, ok)
+	require.NotEmpty(t, privKey.Bundle)
 }
 
 // Test for issue 325.
@@ -94,7 +240,7 @@ func TestPGPImportPublicKey(t *testing.T) {
 	tc := SetupEngineTest(t, "pgpsave")
 	defer tc.Cleanup()
 
-	_, err := NewPGPKeyImportEngineFromBytes([]byte(pubkeyIssue325), false, tc.G)
+	_, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(pubkeyIssue325), false)
 	if err == nil {
 		t.Fatal("import of public key didn't generate error")
 	}
@@ -102,6 +248,26 @@ func TestPGPImportPublicKey(t *testing.T) {
 		t.Error(err)
 		t.Errorf("error returned for import of public key: %T, expected libkb.NoSecretKeyError", err)
 	}
+}
+
+func TestPGPImportNotLoggedIn(t *testing.T) {
+	tc := SetupEngineTest(t, "pgpnotloggedin")
+	defer tc.Cleanup()
+
+	u := CreateAndSignupFakeUser(tc, "login")
+	secui := &libkb.TestSecretUI{Passphrase: u.Passphrase}
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
+
+	_, _, key := genPGPKeyAndArmor(t, tc, u.Email)
+	eng, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	Logout(tc)
+	err = RunEngine2(m, eng)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Login required")
 }
 
 func TestIssue454(t *testing.T) {
@@ -118,13 +284,14 @@ func testImportKey(t *testing.T, which string, armor string, pp string) {
 
 	CreateAndSignupFakeUser(tc, "login")
 	secui := &libkb.TestSecretUI{Passphrase: pp}
-	ctx := &Context{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
-	eng, err := NewPGPKeyImportEngineFromBytes([]byte(armor), false, tc.G)
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
+	eng, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(armor), false)
 	eng.arg.OnlySave = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = RunEngine(eng, ctx)
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(m, eng)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +304,7 @@ func TestPGPImportGPGExport(t *testing.T) {
 	defer tc.Cleanup()
 
 	u := CreateAndSignupFakeUser(tc, "pgp")
-	ctx := &Context{LogUI: tc.G.UI.GetLogUI(), SecretUI: u.NewSecretUI()}
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: u.NewSecretUI()}
 
 	// before running, they should have no pgp keys in key family or in gpg
 	me, err := libkb.LoadMe(libkb.NewLoadUserArg(tc.G))
@@ -160,7 +327,7 @@ func TestPGPImportGPGExport(t *testing.T) {
 		PrimaryBits: 1024,
 		SubkeyBits:  1024,
 	}
-	if err := genArg.MakeAllIds(); err != nil {
+	if err := genArg.MakeAllIds(tc.G); err != nil {
 		t.Fatal(err)
 	}
 	arg := PGPKeyImportEngineArg{
@@ -168,10 +335,10 @@ func TestPGPImportGPGExport(t *testing.T) {
 		PushSecret: true,
 		AllowMulti: true,
 		DoExport:   true,
-		Ctx:        tc.G,
 	}
-	eng := NewPGPKeyImportEngine(arg)
-	if err := RunEngine(eng, ctx); err != nil {
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	eng := NewPGPKeyImportEngine(tc.G, arg)
+	if err := RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,13 +359,38 @@ func TestPGPImportGPGExport(t *testing.T) {
 	}
 }
 
+// TestPGPImportPushSecretWithoutPassword - the engine should prevent nopw
+// users from importing secret keys
+func TestPGPImportPushSecretWithoutPassword(t *testing.T) {
+	tc := SetupEngineTest(t, "pgpnopw")
+	defer tc.Cleanup()
+
+	user, _ := NewFakeUser("login")
+	arg := MakeTestSignupEngineRunArg(user)
+	arg.StoreSecret = true
+	arg.GenerateRandomPassphrase = true
+	arg.Passphrase = ""
+	_, err := CreateAndSignupFakeUserSafeWithArg(tc.G, user, arg)
+	require.NoError(t, err)
+
+	secui := &libkb.TestSecretUI{}
+	uis := libkb.UIs{LogUI: tc.G.UI.GetLogUI(), SecretUI: secui}
+	_, _, key := genPGPKeyAndArmor(t, tc, user.Email)
+	eng, err := NewPGPKeyImportEngineFromBytes(tc.G, []byte(key), true)
+	require.Nil(t, err, "engine initialization should succeed")
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(m, eng)
+	require.NotNil(t, err, "import should fail")
+	require.Contains(t, err.Error(), "You need to set your password first before uploading secret keys")
+}
+
 func numPrivateGPGKeys(g *libkb.GlobalContext) (int, error) {
 	gpg := g.GetGpgClient()
-	if err := gpg.Configure(); err != nil {
+	if err := gpg.Configure(libkb.NewMetaContext(context.Background(), g)); err != nil {
 		return 0, err
 	}
 
-	index, _, err := gpg.Index(true, "")
+	index, _, err := gpg.Index(libkb.NewMetaContext(context.Background(), g), true, "")
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +398,7 @@ func numPrivateGPGKeys(g *libkb.GlobalContext) (int, error) {
 	return index.Len(), nil
 }
 
-func armorKey(t *testing.T, tc libkb.TestContext, email string) (libkb.PGPFingerprint, keybase1.KID, string) {
+func genPGPKeyAndArmor(t *testing.T, tc libkb.TestContext, email string) (libkb.PGPFingerprint, keybase1.KID, string) {
 	bundle, err := tc.MakePGPKey(email)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +416,7 @@ func armorKey(t *testing.T, tc libkb.TestContext, email string) (libkb.PGPFinger
 	}
 	fp := *bundle.GetFingerprintP()
 	kid := bundle.GetKID()
-	return fp, kid, string(buf.Bytes())
+	return fp, kid, buf.String()
 }
 
 const pubkeyIssue325 = `-----BEGIN PGP PUBLIC KEY BLOCK-----

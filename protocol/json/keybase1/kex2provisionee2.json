@@ -4,6 +4,10 @@
     {
       "path": "common.avdl",
       "type": "idl"
+    },
+    {
+      "path": "ephemeral.avdl",
+      "type": "idl"
     }
   ],
   "types": [
@@ -20,27 +24,17 @@
           "name": "sigPayload"
         },
         {
-          "type": {
-            "type": "array",
-            "items": "SharedDHSecretKeyBox"
-          },
-          "name": "sdhBoxes"
+          "type": "KID",
+          "name": "deviceEkKID"
         }
       ]
     },
     {
       "type": "record",
-      "name": "SharedDHKeyGeneration",
-      "fields": [],
-      "typedef": "int",
-      "lint": "ignore"
-    },
-    {
-      "type": "record",
-      "name": "SharedDHSecretKeyBox",
+      "name": "PerUserKeyBox",
       "fields": [
         {
-          "type": "SharedDHKeyGeneration",
+          "type": "PerUserKeyGeneration",
           "name": "generation"
         },
         {
@@ -89,11 +83,18 @@
           "type": "string"
         },
         {
-          "name": "sdhBoxes",
-          "type": {
-            "type": "array",
-            "items": "SharedDHSecretKeyBox"
-          }
+          "name": "pukBox",
+          "type": [
+            null,
+            "PerUserKeyBox"
+          ]
+        },
+        {
+          "name": "userEkBox",
+          "type": [
+            null,
+            "UserEkBoxed"
+          ]
         }
       ],
       "response": null

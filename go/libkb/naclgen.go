@@ -41,12 +41,12 @@ func (g *NaclKeyGen) Generate() (err error) {
 	return
 }
 
-func (g *NaclKeyGen) SaveLKS(gc *GlobalContext, lks *LKSec, lctx LoginContext) error {
-	_, err := WriteLksSKBToKeyring(gc, g.pair, lks, lctx)
+func (g *NaclKeyGen) SaveLKS(m MetaContext, lks *LKSec) error {
+	_, err := WriteLksSKBToKeyring(m, g.pair, lks)
 	return err
 }
 
-func (g *NaclKeyGen) Push(lctx LoginContext, aggregated bool) (d Delegator, err error) {
+func (g *NaclKeyGen) Push(m MetaContext, aggregated bool) (d Delegator, err error) {
 	if g.pair == nil {
 		return Delegator{}, fmt.Errorf("cannot Push delegator before Generate")
 	}
@@ -65,7 +65,7 @@ func (g *NaclKeyGen) Push(lctx LoginContext, aggregated bool) (d Delegator, err 
 		return
 	}
 
-	err = d.Run(lctx)
+	err = d.Run(m)
 	return
 }
 

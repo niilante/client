@@ -3,11 +3,14 @@ package storage
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/keybase/client/go/gregor"
+	"github.com/keybase/client/go/logger"
 	"github.com/keybase/clockwork"
+	"golang.org/x/net/context"
 )
 
 // MemEngine is an implementation of a gregor StateMachine that just keeps
@@ -20,15 +23,17 @@ type MemEngine struct {
 	objFactory gregor.ObjFactory
 	clock      clockwork.Clock
 	users      map[string](*user)
+	log        logger.Logger
 }
 
 // NewMemEngine makes a new MemEngine with the given object factory and the
 // potentially fake clock (or a real clock if not testing).
-func NewMemEngine(f gregor.ObjFactory, cl clockwork.Clock) *MemEngine {
+func NewMemEngine(f gregor.ObjFactory, cl clockwork.Clock, log logger.Logger) *MemEngine {
 	return &MemEngine{
 		objFactory: f,
 		clock:      cl,
 		users:      make(map[string](*user)),
+		log:        log,
 	}
 }
 
@@ -43,7 +48,7 @@ type item struct {
 	ctime time.Time
 	dtime *time.Time
 
-	// If we received a message from the server that a message should be dimissed,
+	// If we received a message from the server that a message should be dismissed,
 	// do so immediately, so as not to introduce clock-skew bugs. We previously
 	// had a bug here --- a message would come in to dismiss a message M at server time T,
 	// but then we would wait around for S seconds before marking that message as
@@ -64,8 +69,17 @@ type loggedMsg struct {
 // user consists of a list of items (some of which might be dismissed) and
 // and an unpruned log of all incoming messages.
 type user struct {
-	items [](*item)
-	log   []loggedMsg
+	logger          logger.Logger
+	items           [](*item)
+	log             []loggedMsg
+	localDismissals []gregor.MsgID
+	outbox          []gregor.Message
+}
+
+func newUser(logger logger.Logger) *user {
+	return &user{
+		logger: logger,
+	}
 }
 
 // isDismissedAt returns true if item i is dismissed at time t. It will always return
@@ -113,12 +127,6 @@ func (u *user) addItem(now time.Time, i gregor.Item) *item {
 	return newItem
 }
 
-func (u *user) addItems(items []gregor.Item) {
-	for _, it := range items {
-		u.addItem(time.Now(), it)
-	}
-}
-
 // logMessage logs a message for this user and potentially associates an item
 func (u *user) logMessage(t time.Time, m gregor.InBandMessage, i *item) {
 	for _, l := range u.log {
@@ -127,6 +135,16 @@ func (u *user) logMessage(t time.Time, m gregor.InBandMessage, i *item) {
 		}
 	}
 	u.log = append(u.log, loggedMsg{m, t, i})
+}
+
+func (u *user) removeLocalDismissal(msgID gregor.MsgID) {
+	var lds []gregor.MsgID
+	for _, ld := range u.localDismissals {
+		if ld.String() != msgID.String() {
+			lds = append(lds, ld)
+		}
+	}
+	u.localDismissals = lds
 }
 
 func msgIDtoString(m gregor.MsgID) string {
@@ -142,6 +160,7 @@ func (u *user) dismissMsgIDs(now time.Time, ids []gregor.MsgID) {
 		if _, found := set[msgIDtoString(i.item.Metadata().MsgID())]; found {
 			i.dtime = &now
 			i.dismissedImmediate = true
+			u.removeLocalDismissal(i.item.Metadata().MsgID())
 		}
 	}
 }
@@ -167,12 +186,23 @@ func toTime(now time.Time, t gregor.TimeOrOffset) time.Time {
 }
 
 func (u *user) dismissRanges(now time.Time, rs []gregor.MsgRange) {
+	isSkipped := func(i *item, r gregor.MsgRange) bool {
+		msgID := i.item.Metadata().MsgID()
+		for _, s := range r.SkipMsgIDs() {
+			if msgID.String() == s.String() {
+				return true
+			}
+		}
+		return false
+	}
 	for _, i := range u.items {
 		for _, r := range rs {
 			if r.Category().String() == i.item.Category().String() &&
-				isBeforeOrSame(i.ctime, toTime(now, r.EndTime())) {
+				isBeforeOrSame(i.ctime, toTime(now, r.EndTime())) &&
+				!isSkipped(i, r) {
 				i.dtime = &now
 				i.dismissedImmediate = true
+				u.removeLocalDismissal(i.item.Metadata().MsgID())
 				break
 			}
 		}
@@ -188,6 +218,9 @@ func (t timeOrOffset) Time() *time.Time {
 func (t timeOrOffset) Offset() *time.Duration { return nil }
 func (t timeOrOffset) Before(t2 time.Time) bool {
 	return time.Time(t).Before(t2)
+}
+func (t timeOrOffset) IsZero() bool {
+	return time.Time(t).IsZero()
 }
 
 var _ gregor.TimeOrOffset = timeOrOffset{}
@@ -211,6 +244,7 @@ func (u *user) state(now time.Time, f gregor.ObjFactory, d gregor.DeviceID, t gr
 		if i.isDismissedAt(toTime(now, t)) {
 			continue
 		}
+
 		exported, err := i.export(f)
 		if err != nil {
 			return nil, err
@@ -239,6 +273,15 @@ func isMessageForDevice(m gregor.InBandMessage, d gregor.DeviceID) bool {
 	return false
 }
 
+func (u *user) getInBandMessage(msgID gregor.MsgID) (gregor.InBandMessage, error) {
+	for _, msg := range u.log {
+		if msg.m.Metadata().MsgID().String() == msgID.String() {
+			return msg.m, nil
+		}
+	}
+	return nil, errors.New("ibm not found")
+}
+
 func (u *user) replayLog(now time.Time, d gregor.DeviceID, t time.Time) (msgs []gregor.InBandMessage, latestCTime *time.Time) {
 	allmsgs := make(map[string]gregor.InBandMessage)
 	for _, msg := range u.log {
@@ -263,28 +306,37 @@ func (u *user) replayLog(now time.Time, d gregor.DeviceID, t time.Time) (msgs []
 	return
 }
 
-func (m *MemEngine) consumeInBandMessage(uid gregor.UID, msg gregor.InBandMessage) (time.Time, error) {
+func (m *MemEngine) consumeInBandMessage(uid gregor.UID, msg gregor.InBandMessage) (gregor.Message, error) {
 	user := m.getUser(uid)
 	now := m.clock.Now()
 	var i *item
 	var err error
 	switch {
 	case msg.ToStateUpdateMessage() != nil:
-		i, err = m.consumeStateUpdateMessage(user, now, msg.ToStateUpdateMessage())
+		if i, err = m.consumeStateUpdateMessage(user, now, msg.ToStateUpdateMessage()); err != nil {
+			return nil, err
+		}
 	default:
 	}
-
-	retTime := now
+	ctime := now
 	if i != nil {
-		retTime = i.ctime
+		ctime = i.ctime
 	}
+	user.logMessage(ctime, msg, i)
 
-	user.logMessage(retTime, msg, i)
-
-	return retTime, err
+	// fetch the message we just consumed out to return
+	ibm, err := user.getInBandMessage(msg.Metadata().MsgID())
+	if err != nil {
+		return nil, err
+	}
+	retMsg, err := m.objFactory.MakeMessageFromInBandMessage(ibm)
+	if err != nil {
+		return nil, err
+	}
+	return retMsg, err
 }
 
-func (m *MemEngine) ConsumeMessage(msg gregor.Message) (time.Time, error) {
+func (m *MemEngine) ConsumeMessage(ctx context.Context, msg gregor.Message) (gregor.Message, error) {
 	m.Lock()
 	defer m.Unlock()
 
@@ -292,8 +344,26 @@ func (m *MemEngine) ConsumeMessage(msg gregor.Message) (time.Time, error) {
 	case msg.ToInBandMessage() != nil:
 		return m.consumeInBandMessage(gregor.UIDFromMessage(msg), msg.ToInBandMessage())
 	default:
-		return m.clock.Now(), nil
+		return msg, nil
 	}
+}
+
+func (m *MemEngine) ConsumeLocalDismissal(ctx context.Context, u gregor.UID, msgID gregor.MsgID) error {
+	user := m.getUser(u)
+	user.removeLocalDismissal(msgID)
+	user.localDismissals = append(user.localDismissals, msgID)
+	return nil
+}
+
+func (m *MemEngine) InitLocalDismissals(ctx context.Context, u gregor.UID, msgIDs []gregor.MsgID) error {
+	user := m.getUser(u)
+	user.localDismissals = msgIDs
+	return nil
+}
+
+func (m *MemEngine) LocalDismissals(ctx context.Context, u gregor.UID) (res []gregor.MsgID, err error) {
+	user := m.getUser(u)
+	return user.localDismissals, nil
 }
 
 func uidToString(u gregor.UID) string {
@@ -306,7 +376,7 @@ func (m *MemEngine) getUser(uid gregor.UID) *user {
 	if u, ok := m.users[uidHex]; ok {
 		return u
 	}
-	u := new(user)
+	u := newUser(m.log)
 	m.users[uidHex] = u
 	return u
 }
@@ -344,15 +414,15 @@ func (m *MemEngine) consumeStateUpdateMessage(u *user, now time.Time, msg gregor
 	return i, nil
 }
 
-func (m *MemEngine) State(u gregor.UID, d gregor.DeviceID, t gregor.TimeOrOffset) (gregor.State, error) {
+func (m *MemEngine) State(ctx context.Context, u gregor.UID, d gregor.DeviceID, t gregor.TimeOrOffset) (gregor.State, error) {
 	m.Lock()
 	defer m.Unlock()
 	user := m.getUser(u)
 	return user.state(m.clock.Now(), m.objFactory, d, t)
 }
 
-func (m *MemEngine) StateByCategoryPrefix(u gregor.UID, d gregor.DeviceID, t gregor.TimeOrOffset, cp gregor.Category) (gregor.State, error) {
-	state, err := m.State(u, d, t)
+func (m *MemEngine) StateByCategoryPrefix(ctx context.Context, u gregor.UID, d gregor.DeviceID, t gregor.TimeOrOffset, cp gregor.Category) (gregor.State, error) {
+	state, err := m.State(ctx, u, d, t)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +438,7 @@ func (m *MemEngine) Clear() error {
 	return nil
 }
 
-func (m *MemEngine) LatestCTime(u gregor.UID, d gregor.DeviceID) *time.Time {
+func (m *MemEngine) LatestCTime(ctx context.Context, u gregor.UID, d gregor.DeviceID) *time.Time {
 	m.Lock()
 	defer m.Unlock()
 	log := m.getUser(u).log
@@ -384,7 +454,7 @@ func (m *MemEngine) LatestCTime(u gregor.UID, d gregor.DeviceID) *time.Time {
 	return nil
 }
 
-func (m *MemEngine) InBandMessagesSince(u gregor.UID, d gregor.DeviceID, t time.Time) ([]gregor.InBandMessage, error) {
+func (m *MemEngine) InBandMessagesSince(ctx context.Context, u gregor.UID, d gregor.DeviceID, t time.Time) ([]gregor.InBandMessage, error) {
 	m.Lock()
 	defer m.Unlock()
 	msgs, _ := m.getUser(u).replayLog(m.clock.Now(), d, t)
@@ -392,12 +462,50 @@ func (m *MemEngine) InBandMessagesSince(u gregor.UID, d gregor.DeviceID, t time.
 	return msgs, nil
 }
 
-func (m *MemEngine) Reminders(maxReminders int) (gregor.ReminderSet, error) {
+func (m *MemEngine) Outbox(ctx context.Context, u gregor.UID) ([]gregor.Message, error) {
+	m.Lock()
+	defer m.Unlock()
+	return m.getUser(u).outbox, nil
+}
+
+func (m *MemEngine) RemoveFromOutbox(ctx context.Context, u gregor.UID, id gregor.MsgID) error {
+	m.Lock()
+	defer m.Unlock()
+	var newOutbox []gregor.Message
+	idstr := id.String()
+	for _, msg := range m.getUser(u).outbox {
+		msgIbm := msg.ToInBandMessage()
+		if msgIbm == nil {
+			continue
+		}
+		if msgIbm.Metadata().MsgID().String() != idstr {
+			newOutbox = append(newOutbox, msg)
+		}
+	}
+	m.getUser(u).outbox = newOutbox
+	return nil
+}
+
+func (m *MemEngine) InitOutbox(ctx context.Context, u gregor.UID, msgs []gregor.Message) error {
+	m.Lock()
+	defer m.Unlock()
+	m.getUser(u).outbox = msgs
+	return nil
+}
+
+func (m *MemEngine) ConsumeOutboxMessage(ctx context.Context, u gregor.UID, msg gregor.Message) error {
+	m.Lock()
+	defer m.Unlock()
+	m.getUser(u).outbox = append(m.getUser(u).outbox, msg)
+	return nil
+}
+
+func (m *MemEngine) Reminders(ctx context.Context, maxReminders int) (gregor.ReminderSet, error) {
 	// Unimplemented for MemEngine
 	return nil, nil
 }
 
-func (m *MemEngine) DeleteReminder(r gregor.ReminderID) error {
+func (m *MemEngine) DeleteReminder(ctx context.Context, r gregor.ReminderID) error {
 	// Unimplemented for MemEngine
 	return nil
 }

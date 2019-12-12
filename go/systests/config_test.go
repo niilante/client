@@ -14,9 +14,7 @@ import (
 )
 
 func TestConfigGetAndSet(t *testing.T) {
-
 	tc := setupTest(t, "stop")
-
 	defer tc.Cleanup()
 
 	stopCh := make(chan error)
@@ -31,12 +29,13 @@ func TestConfigGetAndSet(t *testing.T) {
 	}()
 
 	tc2 := cloneContext(tc)
+	defer tc2.Cleanup()
 
 	<-startCh
 
 	testConfigGetAndSet(t, tc2.G)
 
-	if err := client.CtlServiceStop(tc2.G); err != nil {
+	if err := CtlStop(tc2.G); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,6 +56,10 @@ func (c *configTestUI) GetDumbOutputUI() libkb.DumbOutputUI {
 }
 
 func (c *configTestUI) Printf(fmtString string, args ...interface{}) (int, error) {
+	return c.PrintfUnescaped(fmtString, args...)
+}
+
+func (c *configTestUI) PrintfUnescaped(fmtString string, args ...interface{}) (int, error) {
 	s := fmt.Sprintf(fmtString, args...)
 	c.stdout = append(c.stdout, s)
 	return 0, nil

@@ -3,7 +3,7 @@ package rpc
 import "golang.org/x/net/context"
 
 type task struct {
-	seqid      seqNumber
+	seqid      SeqNumber
 	cancelFunc context.CancelFunc
 }
 
@@ -13,7 +13,7 @@ type receiver interface {
 }
 
 type receiveHandler struct {
-	writer      encoder
+	writer      *framedMsgpackEncoder
 	protHandler *protocolHandler
 
 	tasks map[int]context.CancelFunc
@@ -25,13 +25,13 @@ type receiveHandler struct {
 
 	// Task loop channels
 	taskBeginCh  chan *task
-	taskCancelCh chan seqNumber
-	taskEndCh    chan seqNumber
+	taskCancelCh chan SeqNumber
+	taskEndCh    chan SeqNumber
 
 	log LogInterface
 }
 
-func newReceiveHandler(enc encoder, protHandler *protocolHandler, l LogInterface) *receiveHandler {
+func newReceiveHandler(enc *framedMsgpackEncoder, protHandler *protocolHandler, l LogInterface) *receiveHandler {
 	r := &receiveHandler{
 		writer:      enc,
 		protHandler: protHandler,
@@ -40,8 +40,8 @@ func newReceiveHandler(enc encoder, protHandler *protocolHandler, l LogInterface
 		closedCh:    make(chan struct{}),
 
 		taskBeginCh:  make(chan *task),
-		taskCancelCh: make(chan seqNumber),
-		taskEndCh:    make(chan seqNumber),
+		taskCancelCh: make(chan SeqNumber),
+		taskEndCh:    make(chan SeqNumber),
 
 		log: l,
 	}
@@ -50,7 +50,7 @@ func newReceiveHandler(enc encoder, protHandler *protocolHandler, l LogInterface
 }
 
 func (r *receiveHandler) taskLoop() {
-	tasks := make(map[seqNumber]context.CancelFunc)
+	tasks := make(map[SeqNumber]context.CancelFunc)
 	for {
 		select {
 		case <-r.stopCh:
@@ -85,6 +85,8 @@ func (r *receiveHandler) Receive(rpc rpcMessage) error {
 		return r.receiveResponse(message)
 	case *rpcCancelMessage:
 		return r.receiveCancel(message)
+	case *rpcCallCompressedMessage:
+		return r.receiveCallCompressed(message)
 	default:
 		return NewReceiverError("invalid message type, %d", rpc.Type())
 	}
@@ -97,6 +99,11 @@ func (r *receiveHandler) receiveNotify(rpc *rpcNotifyMessage) error {
 
 func (r *receiveHandler) receiveCall(rpc *rpcCallMessage) error {
 	req := newCallRequest(rpc, r.log)
+	return r.handleReceiveDispatch(req)
+}
+
+func (r *receiveHandler) receiveCallCompressed(rpc *rpcCallCompressedMessage) error {
+	req := newCallCompressedRequest(rpc, r.log)
 	return r.handleReceiveDispatch(req)
 }
 

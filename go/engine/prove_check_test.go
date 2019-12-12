@@ -4,73 +4,46 @@
 package engine
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProveCheck(t *testing.T) {
-	tc := SetupEngineTest(t, "prove check")
-	defer tc.Cleanup()
+	doWithSigChainVersions(func(sigVersion libkb.SigVersion) {
+		tc := SetupEngineTest(t, "proveCheck")
+		defer tc.Cleanup()
 
-	fu := CreateAndSignupFakeUser(tc, "prove")
-	arg := keybase1.StartProofArg{
-		Service:      "rooter",
-		Username:     fu.Username,
-		Force:        false,
-		PromptPosted: true,
-	}
+		fu := CreateAndSignupFakeUser(tc, "prove")
 
-	eng := NewProve(&arg, tc.G)
+		proveCheck := func(sigID keybase1.SigID, noText bool) {
+			checkEng := NewProveCheck(tc.G, sigID)
+			m := libkb.NewMetaContextTODO(tc.G)
+			err := RunEngine2(m, checkEng)
+			require.NoError(t, err)
 
-	hook := func(arg keybase1.OkToCheckArg) (bool, string, error) {
-		sigID := eng.sigID
-		if sigID.IsNil() {
-			return false, "", fmt.Errorf("empty sigID; can't make a post")
+			found, status, state, text := checkEng.Results()
+			require.True(t, found)
+			require.Equal(t, keybase1.ProofStatus_OK, status)
+			require.Equal(t, keybase1.ProofState_OK, state)
+			if noText {
+				require.Zero(t, len(text))
+			} else {
+				require.NotZero(t, len(text))
+			}
 		}
-		apiArg := libkb.APIArg{
-			Endpoint:    "rooter",
-			SessionType: libkb.APISessionTypeREQUIRED,
-			Args: libkb.HTTPArgs{
-				"post": libkb.S{Val: sigID.ToMediumID()},
-			},
-		}
-		_, err := tc.G.API.Post(apiArg)
-		return (err == nil), "", err
-	}
 
-	proveUI := &ProveUIMock{hook: hook}
+		proveUI, sigID, err := proveRooter(tc.G, fu, sigVersion)
+		require.NoError(t, err)
+		require.False(t, proveUI.overwrite)
+		require.False(t, proveUI.warning)
+		require.False(t, proveUI.recheck)
+		require.True(t, proveUI.checked)
+		proveCheck(sigID, false /* noText */)
 
-	ctx := Context{
-		LogUI:    tc.G.UI.GetLogUI(),
-		SecretUI: fu.NewSecretUI(),
-		ProveUI:  proveUI,
-	}
-
-	err := RunEngine(eng, &ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	checkEng := NewProveCheck(tc.G, eng.sigID)
-	err = RunEngine(checkEng, &ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	found, status, state, text := checkEng.Results()
-	if !found {
-		t.Errorf("proof not found, expected to be found")
-	}
-	if status != 1 {
-		t.Errorf("proof status: %d, expected 1", int(status))
-	}
-	if state != 1 {
-		t.Errorf("proof state: %d, expected 1", int(state))
-	}
-	if len(text) == 0 {
-		t.Errorf("empty proof text, expected non-empty")
-	}
+		sigID = proveGubbleSocial(tc, fu, sigVersion)
+		proveCheck(sigID, true /* noText */)
+	})
 }

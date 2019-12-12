@@ -1,13 +1,6 @@
-Recent changes:
----------------
-- Performance! Chats should load faster now, and writes to KBFS should be much faster, avoiding operating system timeouts in most cases.
+Chat:
+• Replies will automatically notify who you're replying to
 
-- Keybase has a new icon. We thank our departing ferret-dog mascot for his years of loyalty.
-
-- Keybase Chat has launched! You can read more about it on the Keybase blog.
-
-- Sharing before signup: Go ahead and put data in /keybase/private/you,friend@twitter/. If you have any invite codes, this will pop up a window with a link to DM them. It also works for end-to-end encryption with Reddit, Coinbase, Github, and Hacker News users.
-
-What we are currently working on:
----------------------------------
-- Mobile apps!
+Misc:
+• Configure a HTTP or SOCKS proxy in advanced settings
+• Support user lookup by phone number

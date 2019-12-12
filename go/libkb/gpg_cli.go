@@ -43,13 +43,13 @@ func (g *GpgCLI) SetTTY(t string) {
 	g.tty = t
 }
 
-func (g *GpgCLI) Configure() (err error) {
+func (g *GpgCLI) Configure(mctx MetaContext) (err error) {
 
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
 
-	prog := G.Env.GetGpg()
-	opts := G.Env.GetGpgOptions()
+	prog := g.G().Env.GetGpg()
+	opts := g.G().Env.GetGpgOptions()
 
 	if len(prog) > 0 {
 		err = canExec(prog)
@@ -63,7 +63,7 @@ func (g *GpgCLI) Configure() (err error) {
 		return err
 	}
 
-	g.logUI.Debug("| configured GPG w/ path: %s", prog)
+	mctx.Debug("| configured GPG w/ path: %s", prog)
 
 	g.path = prog
 	g.options = opts
@@ -72,8 +72,8 @@ func (g *GpgCLI) Configure() (err error) {
 }
 
 // CanExec returns true if a gpg executable exists.
-func (g *GpgCLI) CanExec() (bool, error) {
-	err := g.Configure()
+func (g *GpgCLI) CanExec(mctx MetaContext) (bool, error) {
+	err := g.Configure(mctx)
 	if IsExecError(err) {
 		return false, nil
 	}
@@ -85,16 +85,16 @@ func (g *GpgCLI) CanExec() (bool, error) {
 
 // Path returns the path of the gpg executable.
 // Path is only available if CanExec() is true.
-func (g *GpgCLI) Path() string {
-	canExec, err := g.CanExec()
+func (g *GpgCLI) Path(mctx MetaContext) string {
+	canExec, err := g.CanExec(mctx)
 	if err == nil && canExec {
 		return g.path
 	}
 	return ""
 }
 
-func (g *GpgCLI) ImportKey(secret bool, fp PGPFingerprint, tty string) (*PGPKeyBundle, error) {
-	g.outputVersion()
+func (g *GpgCLI) ImportKeyArmored(mctx MetaContext, secret bool, fp PGPFingerprint, tty string) (string, error) {
+	g.outputVersion(mctx)
 	var cmd string
 	var which string
 	if secret {
@@ -110,24 +110,37 @@ func (g *GpgCLI) ImportKey(secret bool, fp PGPFingerprint, tty string) (*PGPKeyB
 		TTY:       tty,
 	}
 
-	res := g.Run2(arg)
+	res := g.Run2(mctx, arg)
 	if res.Err != nil {
-		return nil, res.Err
+		return "", res.Err
 	}
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(res.Stdout)
+	_, err := buf.ReadFrom(res.Stdout)
+	if err != nil {
+		return "", err
+	}
 	armored := buf.String()
 
 	// Convert to posix style on windows
 	armored = PosixLineEndings(armored)
 
 	if err := res.Wait(); err != nil {
-		return nil, err
+		return "", err
 	}
 
 	if len(armored) == 0 {
-		return nil, NoKeyError{fmt.Sprintf("No %skey found for fingerprint %s", which, fp)}
+		return "", NoKeyError{fmt.Sprintf("No %skey found for fingerprint %s", which, fp)}
+	}
+
+	return armored, nil
+}
+
+func (g *GpgCLI) ImportKey(mctx MetaContext, secret bool, fp PGPFingerprint, tty string) (*PGPKeyBundle, error) {
+
+	armored, err := g.ImportKeyArmored(mctx, secret, fp, tty)
+	if err != nil {
+		return nil, err
 	}
 
 	bundle, w, err := ReadOneKeyFromString(armored)
@@ -140,7 +153,7 @@ func (g *GpgCLI) ImportKey(secret bool, fp PGPFingerprint, tty string) (*PGPKeyB
 	// ArmoredPublicKey from that. That's because the public import goes out of
 	// its way to preserve the exact armored string from GPG.
 	if secret {
-		publicBundle, err := g.ImportKey(false, fp, tty)
+		publicBundle, err := g.ImportKey(mctx, false, fp, tty)
 		if err != nil {
 			return nil, err
 		}
@@ -154,14 +167,40 @@ func (g *GpgCLI) ImportKey(secret bool, fp PGPFingerprint, tty string) (*PGPKeyB
 	return bundle, nil
 }
 
-func (g *GpgCLI) ExportKey(k PGPKeyBundle, private bool) (err error) {
-	g.outputVersion()
+func (g *GpgCLI) ExportKeyArmored(mctx MetaContext, s string) (err error) {
+	g.outputVersion(mctx)
+	arg := RunGpg2Arg{
+		Arguments: []string{"--import"},
+		Stdin:     true,
+	}
+	res := g.Run2(mctx, arg)
+	if res.Err != nil {
+		return res.Err
+	}
+	_, err = res.Stdin.Write([]byte(s))
+	if err != nil {
+		return err
+	}
+	err = res.Stdin.Close()
+	if err != nil {
+		return err
+	}
+	err = res.Wait()
+	return err
+}
+
+func (g *GpgCLI) ExportKey(mctx MetaContext, k PGPKeyBundle, private bool, batch bool) (err error) {
+	g.outputVersion(mctx)
 	arg := RunGpg2Arg{
 		Arguments: []string{"--import"},
 		Stdin:     true,
 	}
 
-	res := g.Run2(arg)
+	if batch {
+		arg.Arguments = append(arg.Arguments, "--batch")
+	}
+
+	res := g.Run2(mctx, arg)
 	if res.Err != nil {
 		return res.Err
 	}
@@ -172,24 +211,30 @@ func (g *GpgCLI) ExportKey(k PGPKeyBundle, private bool) (err error) {
 	return PickFirstError(e1, e2, e3)
 }
 
-func (g *GpgCLI) Sign(fp PGPFingerprint, payload []byte) (string, error) {
-	g.outputVersion()
+func (g *GpgCLI) Sign(mctx MetaContext, fp PGPFingerprint, payload []byte) (string, error) {
+	g.outputVersion(mctx)
 	arg := RunGpg2Arg{
 		Arguments: []string{"--armor", "--sign", "-u", fp.String()},
 		Stdout:    true,
 		Stdin:     true,
 	}
 
-	res := g.Run2(arg)
+	res := g.Run2(mctx, arg)
 	if res.Err != nil {
 		return "", res.Err
 	}
 
-	res.Stdin.Write(payload)
+	_, err := res.Stdin.Write(payload)
+	if err != nil {
+		return "", err
+	}
 	res.Stdin.Close()
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(res.Stdout)
+	_, err = buf.ReadFrom(res.Stdout)
+	if err != nil {
+		return "", err
+	}
 	armored := buf.String()
 
 	// Convert to posix style on windows
@@ -216,13 +261,13 @@ func (g *GpgCLI) Version() (string, error) {
 	return g.version, nil
 }
 
-func (g *GpgCLI) outputVersion() {
+func (g *GpgCLI) outputVersion(mctx MetaContext) {
 	v, err := g.Version()
 	if err != nil {
-		g.logUI.Debug("error getting GPG version: %s", err)
+		mctx.Debug("error getting GPG version: %s", err)
 		return
 	}
-	g.logUI.Debug("GPG version:\n%s", v)
+	mctx.Debug("GPG version:\n%s", v)
 }
 
 func (g *GpgCLI) SemanticVersion() (*semver.Version, error) {
@@ -269,13 +314,13 @@ type RunGpg2Res struct {
 	Err    error
 }
 
-func (g *GpgCLI) Run2(arg RunGpg2Arg) (res RunGpg2Res) {
+func (g *GpgCLI) Run2(mctx MetaContext, arg RunGpg2Arg) (res RunGpg2Res) {
 	if g.path == "" {
 		res.Err = errors.New("no gpg path set")
 		return
 	}
 
-	cmd := g.MakeCmd(arg.Arguments, arg.TTY)
+	cmd := g.MakeCmd(mctx, arg.Arguments, arg.TTY)
 
 	if arg.Stdin {
 		if res.Stdin, res.Err = cmd.StdinPipe(); res.Err != nil {
@@ -317,10 +362,11 @@ func (g *GpgCLI) Run2(arg RunGpg2Arg) (res RunGpg2Res) {
 		return nil
 	}
 
+	bgmctx := mctx.BackgroundWithLogTags()
 	if !arg.Stdout {
 		out++
 		go func() {
-			ch <- DrainPipe(stdout, func(s string) { g.logUI.Debug(s) })
+			ch <- DrainPipe(stdout, func(s string) { bgmctx.Debug(s) })
 		}()
 	} else {
 		res.Stdout = stdout
@@ -329,7 +375,7 @@ func (g *GpgCLI) Run2(arg RunGpg2Arg) (res RunGpg2Res) {
 	if !arg.Stderr {
 		out++
 		go func() {
-			ch <- DrainPipe(stderr, func(s string) { g.logUI.Debug(s) })
+			ch <- DrainPipe(stderr, func(s string) { bgmctx.Debug(s) })
 		}()
 	} else {
 		res.Stderr = stderr
@@ -338,7 +384,7 @@ func (g *GpgCLI) Run2(arg RunGpg2Arg) (res RunGpg2Res) {
 	return
 }
 
-func (g *GpgCLI) MakeCmd(args []string, tty string) *exec.Cmd {
+func (g *GpgCLI) MakeCmd(mctx MetaContext, args []string, tty string) *exec.Cmd {
 	var nargs []string
 	if g.options != nil {
 		nargs = make([]string, len(g.options))
@@ -347,19 +393,23 @@ func (g *GpgCLI) MakeCmd(args []string, tty string) *exec.Cmd {
 	} else {
 		nargs = args
 	}
+	// Always use --no-auto-check-trustdb to prevent gpg from refreshing trustdb.
+	// Refreshing the trustdb can cause hangs when bad keys from CVE-2019-13050 are in the keyring.
+	// --no-auto-check-trustdb was introduced around gpg 1.0 so ought to always be implemented.
+	nargs = append([]string{"--no-auto-check-trustdb"}, nargs...)
 	if g.G().Service {
 		nargs = append([]string{"--no-tty"}, nargs...)
 	}
-	g.logUI.Debug("| running Gpg: %s %s", g.path, strings.Join(nargs, " "))
+	mctx.Debug("| running Gpg: %s %s", g.path, strings.Join(nargs, " "))
 	ret := exec.Command(g.path, nargs...)
 	if tty == "" {
 		tty = g.tty
 	}
 	if tty != "" {
 		ret.Env = append(os.Environ(), "GPG_TTY="+tty)
-		g.logUI.Debug("| setting GPG_TTY=%s", tty)
+		mctx.Debug("| setting GPG_TTY=%s", tty)
 	} else {
-		g.logUI.Debug("| no tty provided, GPG_TTY will not be changed")
+		mctx.Debug("| no tty provided, GPG_TTY will not be changed")
 	}
 	return ret
 }

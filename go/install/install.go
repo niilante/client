@@ -10,14 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/blang/semver"
-	"github.com/kardianos/osext"
 	"github.com/keybase/client/go/libkb"
-	"github.com/keybase/client/go/logger"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
-	"github.com/keybase/go-updater/process"
+	"github.com/keybase/client/go/utils"
 )
 
 // Log is the logging interface for this package
@@ -28,7 +25,7 @@ type Log interface {
 	Errorf(s string, args ...interface{})
 }
 
-// Context is the enviroment for this package
+// Context is the environment for this package
 type Context interface {
 	GetConfigDir() string
 	GetCacheDir() string
@@ -62,12 +59,16 @@ const (
 	ComponentNameHelper ComponentName = "helper"
 	// ComponentNameMountDir is the mount directory
 	ComponentNameMountDir ComponentName = "mountdir"
+	// ComponentNameCLIPaths is for /etc/paths.d/Keybase
+	ComponentNameCLIPaths ComponentName = "clipaths"
+	// ComponentNameRedirector is the KBFS redirector
+	ComponentNameRedirector ComponentName = "redirector"
 	// ComponentNameUnknown is placeholder for unknown components
 	ComponentNameUnknown ComponentName = "unknown"
 )
 
 // ComponentNames are all the valid component names
-var ComponentNames = []ComponentName{ComponentNameCLI, ComponentNameService, ComponentNameKBFS, ComponentNameUpdater, ComponentNameFuse, ComponentNameHelper, ComponentNameApp, ComponentNameKBNM}
+var ComponentNames = []ComponentName{ComponentNameCLI, ComponentNameService, ComponentNameKBFS, ComponentNameUpdater, ComponentNameFuse, ComponentNameHelper, ComponentNameApp, ComponentNameKBNM, ComponentNameRedirector, ComponentNameCLIPaths}
 
 // String returns string for ComponentName
 func (c ComponentName) String() string {
@@ -93,6 +94,10 @@ func (c ComponentName) Description() string {
 		return "Privileged Helper Tool"
 	case ComponentNameKBNM:
 		return "Browser Native Messaging"
+	case ComponentNameCLIPaths:
+		return "Command Line (privileged)"
+	case ComponentNameRedirector:
+		return "Redirector (privileged)"
 	}
 	return "Unknown"
 }
@@ -116,6 +121,10 @@ func ComponentNameFromString(s string) ComponentName {
 		return ComponentNameFuse
 	case string(ComponentNameHelper):
 		return ComponentNameHelper
+	case string(ComponentNameCLIPaths):
+		return ComponentNameCLIPaths
+	case string(ComponentNameRedirector):
+		return ComponentNameRedirector
 	}
 	return ComponentNameUnknown
 }
@@ -124,7 +133,8 @@ func ComponentNameFromString(s string) ComponentName {
 func ResolveInstallStatus(version string, bundleVersion string, lastExitStatus string, log Log) (installStatus keybase1.InstallStatus, installAction keybase1.InstallAction, status keybase1.Status) {
 	installStatus = keybase1.InstallStatus_UNKNOWN
 	installAction = keybase1.InstallAction_UNKNOWN
-	if version != "" && bundleVersion != "" {
+	switch {
+	case version != "" && bundleVersion != "":
 		sv, err := semver.Make(version)
 		if err != nil {
 			installStatus = keybase1.InstallStatus_ERROR
@@ -133,28 +143,29 @@ func ResolveInstallStatus(version string, bundleVersion string, lastExitStatus s
 			return
 		}
 		bsv, err := semver.Make(bundleVersion)
-		// Invalid bundle bersion
+		// Invalid bundle version
 		if err != nil {
 			installStatus = keybase1.InstallStatus_ERROR
 			installAction = keybase1.InstallAction_NONE
 			status = keybase1.StatusFromCode(keybase1.StatusCode_SCInvalidVersionError, err.Error())
 			return
 		}
-		if bsv.GT(sv) {
+		switch {
+		case bsv.GT(sv):
 			installStatus = keybase1.InstallStatus_INSTALLED
 			installAction = keybase1.InstallAction_UPGRADE
-		} else if bsv.EQ(sv) {
+		case bsv.EQ(sv):
 			installStatus = keybase1.InstallStatus_INSTALLED
 			installAction = keybase1.InstallAction_NONE
-		} else if bsv.LT(sv) {
+		case bsv.LT(sv):
 			// It's ok if we have a bundled version less than what was installed
 			log.Warning("Bundle version (%s) is less than installed version (%s)", bundleVersion, version)
 			installStatus = keybase1.InstallStatus_INSTALLED
 			installAction = keybase1.InstallAction_NONE
 		}
-	} else if version != "" && bundleVersion == "" {
+	case version != "" && bundleVersion == "":
 		installStatus = keybase1.InstallStatus_INSTALLED
-	} else if version == "" && bundleVersion != "" {
+	case version == "" && bundleVersion != "":
 		installStatus = keybase1.InstallStatus_NOT_INSTALLED
 		installAction = keybase1.InstallAction_INSTALL
 	}
@@ -185,19 +196,7 @@ func KBFSBundleVersion(context Context, binPath string) (string, error) {
 	return kbfsVersion, nil
 }
 
-func createCommandLine(binPath string, linkPath string, log Log) error {
-	if _, err := os.Lstat(linkPath); err == nil {
-		err := os.Remove(linkPath)
-		if err != nil {
-			return err
-		}
-	}
-
-	log.Info("Linking %s to %s", linkPath, binPath)
-	return os.Symlink(binPath, linkPath)
-}
-
-func defaultLinkPath() (string, error) {
+func defaultLinkPath() (string, error) { //nolint
 	if runtime.GOOS == "windows" {
 		return "", fmt.Errorf("Unsupported on Windows")
 	}
@@ -209,12 +208,7 @@ func defaultLinkPath() (string, error) {
 	return linkPath, nil
 }
 
-func uninstallCommandLine(log Log) error {
-	linkPath, err := defaultLinkPath()
-	if err != nil {
-		return nil
-	}
-
+func uninstallLink(linkPath string, log Log) error { //nolint
 	log.Debug("Link path: %s", linkPath)
 	fi, err := os.Lstat(linkPath)
 	if os.IsNotExist(err) {
@@ -236,12 +230,13 @@ func chooseBinPath(bp string) (string, error) {
 	return BinPath()
 }
 
-// BinPath returns path to the keybase executable
+// BinPath returns path to the keybase executable. If the executable path is a
+// symlink, the target path is returned.
 func BinPath() (string, error) {
-	return osext.Executable()
+	return utils.BinPath()
 }
 
-func binName() (string, error) {
+func binName() (string, error) { //nolint
 	path, err := BinPath()
 	if err != nil {
 		return "", err
@@ -264,7 +259,7 @@ func UpdaterBinPath() (string, error) {
 }
 
 // kbfsBinPathDefault returns the default path to the KBFS executable.
-// If binPath (directory) is specifed, it will override the default (which is in
+// If binPath (directory) is specified, it will override the default (which is in
 // the same directory where the keybase executable is).
 func kbfsBinPathDefault(runMode libkb.RunMode, binPath string) (string, error) {
 	path, err := chooseBinPath(binPath)
@@ -274,14 +269,7 @@ func kbfsBinPathDefault(runMode libkb.RunMode, binPath string) (string, error) {
 	return filepath.Join(filepath.Dir(path), kbfsBinName()), nil
 }
 
-// TerminateApp will stop the Keybase (UI) app
-func TerminateApp(context Context, log Log) error {
-	appExecName := "Keybase"
-	logf := logger.NewLoggerf(log)
-	log.Info("Stopping Keybase app")
-	appPIDs := process.TerminateAll(process.NewMatcher(appExecName, process.ExecutableEqual, logf), 5*time.Second, logf)
-	if len(appPIDs) > 0 {
-		log.Info("Terminated %s %v", appExecName, appPIDs)
-	}
-	return nil
+type CommonLsofResult struct {
+	PID     string
+	Command string
 }

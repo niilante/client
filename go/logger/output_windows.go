@@ -19,8 +19,9 @@ import (
 	"sync"
 	"syscall"
 
-	"golang.org/x/sys/windows"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
@@ -72,7 +73,6 @@ const (
 	fgYellow    WORD = 0x0006
 	fgWhite     WORD = 0x0007
 	fgIntensity WORD = 0x0008
-	fgMask      WORD = 0x000F
 
 	bgBlack     WORD = 0x0000
 	bgBlue      WORD = 0x0010
@@ -83,7 +83,6 @@ const (
 	bgYellow    WORD = 0x0060
 	bgWhite     WORD = 0x0070
 	bgIntensity WORD = 0x0080
-	bgMask      WORD = 0x00F0
 )
 
 var codesWin = map[byte]WORD{
@@ -238,14 +237,14 @@ func (cw *ColorWriter) parseColorControl(p []byte) []byte {
 		setConsoleTextAttribute(cw.fd, code)
 	}
 	if controlIndex+1 <= len(p) {
-		controlIndex += 1
+		controlIndex++
 	}
 
 	return p[controlIndex:]
 }
 
 // parseControlCode is for absorbing backspaces, which
-// caused junk tocome out on the console, and whichever
+// caused junk to come out on the console, and whichever
 // other control code we're probably unprepared for
 func (cw *ColorWriter) parseControlCode(p []byte) []byte {
 	if p[0] == 'D' {
@@ -284,7 +283,9 @@ func SaveConsoleMode() error {
 // RestoreConsoleMode restores the current text attributes from a global,
 // in case nonstandard colors are expected.
 func RestoreConsoleMode() {
-	setConsoleTextAttribute(os.Stdout.Fd(), consoleMode)
+	if consoleMode != 0 {
+		setConsoleTextAttribute(os.Stdout.Fd(), consoleMode)
+	}
 }
 
 // checkError evaluates the results of a Windows API call and returns the error if it failed.

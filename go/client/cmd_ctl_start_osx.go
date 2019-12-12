@@ -7,6 +7,7 @@ package client
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/keybase/cli"
 	"github.com/keybase/client/go/install"
@@ -49,6 +50,25 @@ func newCmdCtlStart(g *libkb.GlobalContext) *cmdCtlStart {
 	}
 }
 
+// ctlParseArgv returns map with include/exclude components
+func ctlParseArgv(ctx *cli.Context) map[string]bool {
+	components := defaultCtlComponents(true)
+	if ctx.String("exclude") != "" {
+		excluded := strings.Split(ctx.String("exclude"), ",")
+		for _, exclude := range excluded {
+			components[exclude] = false
+		}
+	}
+	if ctx.String("include") != "" {
+		included := strings.Split(ctx.String("include"), ",")
+		components = defaultCtlComponents(false)
+		for _, include := range included {
+			components[include] = true
+		}
+	}
+	return components
+}
+
 func (s *cmdCtlStart) ParseArgv(ctx *cli.Context) error {
 	s.components = ctlParseArgv(ctx)
 	return nil
@@ -71,7 +91,7 @@ func ctlStart(g *libkb.GlobalContext, components map[string]bool) error {
 		}
 	}
 	if ok := components[install.ComponentNameKBFS.String()]; ok {
-		if err := install.InstallKBFS(g, "", false, defaultLaunchdWait, g.Log); err != nil {
+		if err := install.InstallKBFS(g, "", false, false, defaultLaunchdWait, g.Log); err != nil {
 			errs = append(errs, err)
 			g.Log.Errorf("%s", err)
 		}

@@ -1,7 +1,7 @@
 
 @namespace("keybase.1")
 protocol gregorUI {
-  import idl "github.com/keybase/client/go/protocol/gregor1" as gregor1;
+  import idl "../gregor1" as gregor1;
 
   enum PushReason {
     NONE_0,
@@ -9,6 +9,6 @@ protocol gregorUI {
     NEW_DATA_2
   }
 
-  void pushState(gregor1.State state, PushReason reason);
-  void pushOutOfBandMessages(array<gregor1.OutOfBandMessage> oobm);
+  void pushState(gregor1.State state, PushReason reason) oneway;
+  void pushOutOfBandMessages(array<gregor1.OutOfBandMessage> oobm) oneway;
 }

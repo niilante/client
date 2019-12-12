@@ -14,7 +14,7 @@ import (
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
 
-// CmdSimpleFSMove is the 'fs list' command.
+// CmdSimpleFSMove is the 'fs mv' command.
 type CmdSimpleFSMove struct {
 	libkb.Contextified
 	src         []keybase1.Path
@@ -37,6 +37,7 @@ func NewCmdSimpleFSMove(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.
 				Contextified: libkb.NewContextified(g),
 				opCanceler:   NewOpCanceler(g),
 			}, "mv", c)
+			cl.SetNoStandalone()
 		},
 		Flags: []cli.Flag{
 			cli.BoolFlag{
@@ -69,14 +70,14 @@ func (c *CmdSimpleFSMove) Run() error {
 	isDestDir, destPathString, _ := checkPathIsDir(ctx, cli, c.dest)
 
 	for _, src := range destPaths {
-		c.G().Log.Debug("SimpleFSMove %s -> %s, %v", pathToString(src), destPathString, isDestDir)
+		c.G().Log.Debug("SimpleFSMove %s -> %s, %v", src, destPathString, isDestDir)
 
 		dest, err := makeDestPath(ctx, c.G(), cli, src, c.dest, isDestDir, destPathString)
 
 		if err == ErrTargetFileExists {
-			if c.interactive == true {
-				err = doOverwritePrompt(c.G(), pathToString(dest))
-			} else if c.force == true {
+			if c.interactive {
+				err = doOverwritePrompt(c.G(), dest.String())
+			} else if c.force {
 				err = nil
 			}
 		}
@@ -84,7 +85,7 @@ func (c *CmdSimpleFSMove) Run() error {
 		if err != nil {
 			return err
 		}
-		c.G().Log.Debug("SimpleFSMove %s -> %s", pathToString(src), pathToString(dest))
+		c.G().Log.Debug("SimpleFSMove %s -> %s", src, dest)
 
 		// Don't spawn new jobs if we've been cancelled.
 		// TODO: This is still a race condition, if we get cancelled immediately after.
@@ -92,9 +93,9 @@ func (c *CmdSimpleFSMove) Run() error {
 			break
 		}
 
-		opid, err := cli.SimpleFSMakeOpid(ctx)
-		if err != nil {
-			return err
+		opid, err2 := cli.SimpleFSMakeOpid(ctx)
+		if err2 != nil {
+			return err2
 		}
 		c.opCanceler.AddOp(opid)
 		defer cli.SimpleFSClose(ctx, opid)

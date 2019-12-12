@@ -10,20 +10,39 @@ import (
 )
 
 func NewCmdChat(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Command {
+	subcommands := []cli.Command{
+		newCmdChatAddToChannel(cl, g),
+		newCmdChatAPI(cl, g),
+		newCmdChatAPIListen(cl, g),
+		newCmdChatDeleteChannel(cl, g),
+		newCmdChatDeleteHistory(cl, g),
+		newCmdChatDownload(cl, g),
+		newCmdChatHide(cl, g),
+		newCmdChatJoinChannel(cl, g),
+		newCmdChatLeaveChannel(cl, g),
+		newCmdChatRenameChannel(cl, g),
+		newCmdChatCreateChannel(cl, g),
+		newCmdChatList(cl, g),
+		newCmdChatListChannels(cl, g),
+		newCmdChatListMembers(cl, g),
+		newCmdChatListUnread(cl, g),
+		newCmdChatMute(cl, g),
+		newCmdChatRead(cl, g),
+		newCmdChatReAddMember(cl, g),
+		newCmdChatReport(cl, g),
+		newCmdChatSetRetention(cl, g),
+		newCmdChatSetConvMinWriterRole(cl, g),
+		newCmdChatSetNotificationSettings(cl, g),
+		newCmdChatSearchInbox(cl, g),
+		newCmdChatSearchRegexp(cl, g),
+		newCmdChatSend(cl, g),
+		newCmdChatUpload(cl, g),
+	}
+	subcommands = append(subcommands, getBuildSpecificChatCommands(cl, g)...)
 	return cli.Command{
 		Name:         "chat",
 		Usage:        "Chat securely with keybase users",
 		ArgumentHelp: "[arguments...]",
-		Subcommands: []cli.Command{
-			newCmdChatAPI(cl, g),
-			newCmdChatDownload(cl, g),
-			newCmdChatHide(cl, g),
-			newCmdChatMute(cl, g),
-			newCmdChatList(cl, g),
-			newCmdChatListUnread(cl, g),
-			newCmdChatRead(cl, g),
-			newCmdChatSend(cl, g),
-			newCmdChatUpload(cl, g),
-		},
+		Subcommands:  subcommands,
 	}
 }

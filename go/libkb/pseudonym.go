@@ -62,7 +62,7 @@ type tlfPseudonymReq struct {
 
 // tlfPseudonymContents is the data packed inside the HMAC
 type tlfPseudonymContents struct {
-	_struct bool `codec:",toarray"`
+	_struct bool `codec:",toarray"` //nolint
 	Version int
 	Name    string
 	ID      tlfID
@@ -111,11 +111,11 @@ func MakePseudonym(info TlfPseudonymInfo) (TlfPseudonym, error) {
 		return [32]byte{}, err
 	}
 	mac := hmac.New(sha256.New, info.HmacKey[:])
-	mac.Write(buf)
-	hmac, err := MakeByte32(mac.Sum(nil))
+	_, err = mac.Write(buf)
 	if err != nil {
 		return [32]byte{}, err
 	}
+	hmac := MakeByte32(mac.Sum(nil))
 	return hmac, nil
 }
 
@@ -140,8 +140,9 @@ func PostTlfPseudonyms(ctx context.Context, g *GlobalContext, pnymInfos []TlfPse
 
 	payload := make(JSONPayload)
 	payload["tlf_pseudonyms"] = pnymReqs
+	mctx := NewMetaContext(ctx, g)
 
-	_, err := G.API.PostJSON(APIArg{
+	_, err := g.API.PostJSON(mctx, APIArg{
 		Endpoint:    "kbfs/pseudonym/put",
 		JSONPayload: payload,
 		SessionType: APISessionTypeREQUIRED,
@@ -166,12 +167,12 @@ func GetTlfPseudonyms(ctx context.Context, g *GlobalContext, pnyms []TlfPseudony
 	payload["tlf_pseudonyms"] = pnymStrings
 
 	var res getTlfPseudonymsRes
-	err := g.API.PostDecode(
+	mctx := NewMetaContext(ctx, g)
+	err := g.API.PostDecode(mctx,
 		APIArg{
 			Endpoint:    "kbfs/pseudonym/get",
 			SessionType: APISessionTypeREQUIRED,
 			JSONPayload: payload,
-			NetContext:  ctx,
 		},
 		&res)
 	if err != nil {
@@ -216,22 +217,16 @@ func checkAndConvertTlfPseudonymFromServer(ctx context.Context, g *GlobalContext
 		info.Name = received.Info.Name
 		info.UntrustedCurrentName = received.Info.UntrustedCurrentName
 
-		n, err := hex.Decode(info.ID[:], []byte(received.Info.ID))
+		err := DecodeHexFixed(info.ID[:], []byte(received.Info.ID))
 		if err != nil {
 			return mkErr(err)
-		}
-		if n != len(info.ID) {
-			return mkErr(fmt.Errorf("tlf id wrong length"))
 		}
 
 		info.KeyGen = KeyGen(received.Info.KeyGen)
 
-		n, err = hex.Decode(info.HmacKey[:], []byte(received.Info.HmacKey))
+		err = DecodeHexFixed(info.HmacKey[:], []byte(received.Info.HmacKey))
 		if err != nil {
 			return mkErr(err)
-		}
-		if n != len(info.HmacKey) {
-			return mkErr(fmt.Errorf("hmac key wrong length"))
 		}
 
 		x.Info = &info
@@ -274,9 +269,5 @@ func RandomHmacKey() [32]byte {
 	if err != nil {
 		panic(err)
 	}
-	array, err := MakeByte32(slice)
-	if err != nil {
-		panic(err)
-	}
-	return array
+	return MakeByte32(slice)
 }

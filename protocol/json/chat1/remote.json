@@ -2,9 +2,14 @@
   "protocol": "remote",
   "imports": [
     {
-      "path": "github.com/keybase/client/go/protocol/gregor1",
+      "path": "../gregor1",
       "type": "idl",
       "import_as": "gregor1"
+    },
+    {
+      "path": "../keybase1",
+      "type": "idl",
+      "import_as": "keybase1"
     }
   ],
   "types": [
@@ -51,7 +56,9 @@
       "symbols": [
         "VNONE_0",
         "V1_1",
-        "V2_2"
+        "V2_2",
+        "V3_3",
+        "V4_4"
       ]
     },
     {
@@ -120,6 +127,14 @@
           "name": "thread"
         },
         {
+          "type": "ConversationMembersType",
+          "name": "membersType"
+        },
+        {
+          "type": "keybase1.TLFVisibility",
+          "name": "visibility"
+        },
+        {
           "type": [
             null,
             "RateLimit"
@@ -169,6 +184,10 @@
         {
           "type": "ConversationID",
           "name": "convID"
+        },
+        {
+          "type": "boolean",
+          "name": "createdComplexTeam"
         },
         {
           "type": [
@@ -247,6 +266,35 @@
     },
     {
       "type": "record",
+      "name": "GetUnreadlineRemoteRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "MessageID"
+          ],
+          "name": "unreadlineID"
+        },
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "ChannelMention",
+      "symbols": [
+        "NONE_0",
+        "ALL_1",
+        "HERE_2"
+      ]
+    },
+    {
+      "type": "record",
       "name": "UnreadUpdateFull",
       "fields": [
         {
@@ -256,6 +304,10 @@
         {
           "type": "InboxVers",
           "name": "inboxVers"
+        },
+        {
+          "type": "SyncInboxResType",
+          "name": "inboxSyncStatus"
         },
         {
           "type": {
@@ -298,15 +350,6 @@
           "type": "string",
           "name": "regionBucketEndpoint"
         }
-      ]
-    },
-    {
-      "type": "enum",
-      "name": "SyncInboxResType",
-      "symbols": [
-        "CURRENT_0",
-        "INCREMENTAL_1",
-        "CLEAR_2"
       ]
     },
     {
@@ -387,6 +430,14 @@
     },
     {
       "type": "enum",
+      "name": "SyncAllProtVers",
+      "symbols": [
+        "V0_0",
+        "V1_1"
+      ]
+    },
+    {
+      "type": "enum",
       "name": "SyncAllNotificationType",
       "symbols": [
         "STATE_0",
@@ -438,6 +489,372 @@
           "name": "badge"
         }
       ]
+    },
+    {
+      "type": "record",
+      "name": "JoinLeaveConversationRemoteRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "DeleteConversationRemoteRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "GetMessageBeforeRes",
+      "fields": [
+        {
+          "type": "MessageID",
+          "name": "msgID"
+        },
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "GetTLFConversationsRes",
+      "fields": [
+        {
+          "type": {
+            "type": "array",
+            "items": "Conversation"
+          },
+          "name": "conversations"
+        },
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "SetAppNotificationSettingsRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "SetRetentionRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "SetConvMinWriterRoleRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "SweepRes",
+      "fields": [
+        {
+          "type": "boolean",
+          "name": "foundTask"
+        },
+        {
+          "type": "boolean",
+          "name": "deletedMessages"
+        },
+        {
+          "type": "Expunge",
+          "name": "expunge"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ServerNowRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        },
+        {
+          "type": "gregor1.Time",
+          "name": "now"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "ExternalAPIKeyTyp",
+      "symbols": [
+        "GOOGLEMAPS_0",
+        "GIPHY_1"
+      ]
+    },
+    {
+      "type": "variant",
+      "name": "ExternalAPIKey",
+      "switch": {
+        "type": "ExternalAPIKeyTyp",
+        "name": "typ"
+      },
+      "cases": [
+        {
+          "label": {
+            "name": "GOOGLEMAPS",
+            "def": false
+          },
+          "body": "string"
+        },
+        {
+          "label": {
+            "name": "GIPHY",
+            "def": false
+          },
+          "body": "string"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "BotInfoHashVers",
+      "fields": [],
+      "typedef": "uint64",
+      "lint": "ignore"
+    },
+    {
+      "type": "record",
+      "name": "CommandConvVers",
+      "fields": [],
+      "typedef": "uint64",
+      "lint": "ignore"
+    },
+    {
+      "type": "record",
+      "name": "RemoteBotCommandsAdvertisementPublic",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "RemoteBotCommandsAdvertisementTLFID",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "TLFID",
+          "name": "tlfID"
+        }
+      ]
+    },
+    {
+      "type": "variant",
+      "name": "RemoteBotCommandsAdvertisement",
+      "switch": {
+        "type": "BotCommandsAdvertisementTyp",
+        "name": "typ"
+      },
+      "cases": [
+        {
+          "label": {
+            "name": "PUBLIC",
+            "def": false
+          },
+          "body": "RemoteBotCommandsAdvertisementPublic"
+        },
+        {
+          "label": {
+            "name": "TLFID_MEMBERS",
+            "def": false
+          },
+          "body": "RemoteBotCommandsAdvertisementTLFID"
+        },
+        {
+          "label": {
+            "name": "TLFID_CONVS",
+            "def": false
+          },
+          "body": "RemoteBotCommandsAdvertisementTLFID"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "BotCommandConv",
+      "fields": [
+        {
+          "type": "gregor1.UID",
+          "name": "uid"
+        },
+        {
+          "type": "keybase1.TeamRole",
+          "name": "untrustedTeamRole"
+        },
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "CommandConvVers",
+          "name": "vers"
+        },
+        {
+          "type": "gregor1.Time",
+          "name": "mtime"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "BotInfo",
+      "fields": [
+        {
+          "type": "BotInfoHashVers",
+          "name": "serverHashVers"
+        },
+        {
+          "type": "BotInfoHashVers",
+          "name": "clientHashVers"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "BotCommandConv"
+          },
+          "name": "commandConvs"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "AdvertiseBotCommandsRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ClearBotCommandsRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "BotInfoResponseTyp",
+      "symbols": [
+        "UPTODATE_0",
+        "INFO_1"
+      ]
+    },
+    {
+      "type": "variant",
+      "name": "BotInfoResponse",
+      "switch": {
+        "type": "BotInfoResponseTyp",
+        "name": "typ"
+      },
+      "cases": [
+        {
+          "label": {
+            "name": "UPTODATE",
+            "def": false
+          },
+          "body": null
+        },
+        {
+          "label": {
+            "name": "INFO",
+            "def": false
+          },
+          "body": "BotInfo"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "GetBotInfoRes",
+      "fields": [
+        {
+          "type": "BotInfoResponse",
+          "name": "response"
+        },
+        {
+          "type": [
+            null,
+            "RateLimit"
+          ],
+          "name": "rateLimit"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "BotInfoHash",
+      "fields": [],
+      "typedef": "bytes"
     }
   ],
   "messages": {
@@ -462,13 +879,18 @@
           ]
         }
       ],
-      "response": "GetInboxRemoteRes"
+      "response": "GetInboxRemoteRes",
+      "timeout_msec": 300000
     },
     "getThreadRemote": {
       "request": [
         {
           "name": "conversationID",
           "type": "ConversationID"
+        },
+        {
+          "name": "reason",
+          "type": "GetThreadReason"
         },
         {
           "name": "query",
@@ -486,6 +908,19 @@
         }
       ],
       "response": "GetThreadRemoteRes"
+    },
+    "getUnreadlineRemote": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "readMsgID",
+          "type": "MessageID"
+        }
+      ],
+      "response": "GetUnreadlineRemoteRes"
     },
     "getPublicConversations": {
       "request": [
@@ -513,6 +948,31 @@
         {
           "name": "messageBoxed",
           "type": "MessageBoxed"
+        },
+        {
+          "name": "atMentions",
+          "type": {
+            "type": "array",
+            "items": "gregor1.UID"
+          }
+        },
+        {
+          "name": "channelMention",
+          "type": "ChannelMention"
+        },
+        {
+          "name": "topicNameState",
+          "type": [
+            null,
+            "TopicNameState"
+          ]
+        },
+        {
+          "name": "joinMentionsAs",
+          "type": [
+            null,
+            "ConversationMemberStatus"
+          ]
         }
       ],
       "response": "PostRemoteRes"
@@ -535,6 +995,24 @@
         {
           "name": "TLFMessage",
           "type": "MessageBoxed"
+        },
+        {
+          "name": "membersType",
+          "type": "ConversationMembersType"
+        },
+        {
+          "name": "topicNameState",
+          "type": [
+            null,
+            "TopicNameState"
+          ]
+        },
+        {
+          "name": "memberSourceConv",
+          "type": [
+            null,
+            "ConversationID"
+          ]
         }
       ],
       "response": "NewConversationRemoteRes",
@@ -545,6 +1023,13 @@
         {
           "name": "conversationID",
           "type": "ConversationID"
+        },
+        {
+          "name": "threadReason",
+          "type": [
+            null,
+            "GetThreadReason"
+          ]
         },
         {
           "name": "messageIDs",
@@ -638,6 +1123,10 @@
         {
           "name": "vers",
           "type": "InboxVers"
+        },
+        {
+          "name": "summarizeMaxMsgs",
+          "type": "boolean"
         }
       ],
       "response": "SyncChatRes"
@@ -663,9 +1152,26 @@
         {
           "name": "ctime",
           "type": "gregor1.Time"
+        },
+        {
+          "name": "fresh",
+          "type": "boolean"
+        },
+        {
+          "name": "protVers",
+          "type": "SyncAllProtVers"
+        },
+        {
+          "name": "hostName",
+          "type": "string"
+        },
+        {
+          "name": "summarizeMaxMsgs",
+          "type": "boolean"
         }
       ],
-      "response": "SyncAllResult"
+      "response": "SyncAllResult",
+      "compression_type": "msgpackzip"
     },
     "tlfFinalize": {
       "request": [
@@ -688,6 +1194,13 @@
         {
           "name": "resetFull",
           "type": "string"
+        },
+        {
+          "name": "resetUID",
+          "type": [
+            null,
+            "keybase1.UID"
+          ]
         }
       ],
       "response": null
@@ -715,40 +1228,321 @@
       ],
       "response": null
     },
-    "publishReadMessage": {
+    "updateTypingRemote": {
       "request": [
         {
           "name": "uid",
           "type": "gregor1.UID"
         },
         {
+          "name": "deviceID",
+          "type": "gregor1.DeviceID"
+        },
+        {
           "name": "convID",
           "type": "ConversationID"
         },
         {
-          "name": "msgID",
-          "type": "MessageID"
+          "name": "typing",
+          "type": "boolean"
         }
       ],
       "response": null
     },
-    "publishSetConversationStatus": {
+    "joinConversation": {
       "request": [
         {
-          "name": "uid",
-          "type": "gregor1.UID"
-        },
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": "JoinLeaveConversationRemoteRes"
+    },
+    "leaveConversation": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": "JoinLeaveConversationRemoteRes"
+    },
+    "previewConversation": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": "JoinLeaveConversationRemoteRes"
+    },
+    "deleteConversation": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": "DeleteConversationRemoteRes"
+    },
+    "getMessageBefore": {
+      "request": [
         {
           "name": "convID",
           "type": "ConversationID"
         },
         {
-          "name": "status",
-          "type": "ConversationStatus"
+          "name": "age",
+          "type": "gregor1.DurationSec"
+        }
+      ],
+      "response": "GetMessageBeforeRes"
+    },
+    "getTLFConversations": {
+      "request": [
+        {
+          "name": "tlfID",
+          "type": "TLFID"
+        },
+        {
+          "name": "topicType",
+          "type": "TopicType"
+        },
+        {
+          "name": "summarizeMaxMsgs",
+          "type": "boolean"
+        },
+        {
+          "name": "useCache",
+          "type": "boolean"
+        }
+      ],
+      "response": "GetTLFConversationsRes"
+    },
+    "setAppNotificationSettings": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "settings",
+          "type": "ConversationNotificationInfo"
+        }
+      ],
+      "response": "SetAppNotificationSettingsRes"
+    },
+    "setGlobalAppNotificationSettings": {
+      "request": [
+        {
+          "name": "settings",
+          "type": "GlobalAppNotificationSettings"
         }
       ],
       "response": null
+    },
+    "getGlobalAppNotificationSettings": {
+      "request": [],
+      "response": "GlobalAppNotificationSettings"
+    },
+    "remoteNotificationSuccessful": {
+      "request": [
+        {
+          "name": "authToken",
+          "type": "gregor1.SessionToken"
+        },
+        {
+          "name": "companionPushIDs",
+          "type": {
+            "type": "array",
+            "items": "string"
+          }
+        }
+      ],
+      "response": null,
+      "compression_type": "none"
+    },
+    "setConvRetention": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "policy",
+          "type": "RetentionPolicy"
+        },
+        {
+          "name": "sweepChannel",
+          "type": "uint64"
+        }
+      ],
+      "response": "SetRetentionRes"
+    },
+    "setTeamRetention": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "keybase1.TeamID"
+        },
+        {
+          "name": "policy",
+          "type": "RetentionPolicy"
+        },
+        {
+          "name": "sweepChannel",
+          "type": "uint64"
+        }
+      ],
+      "response": "SetRetentionRes"
+    },
+    "setConvMinWriterRole": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "role",
+          "type": "keybase1.TeamRole"
+        }
+      ],
+      "response": "SetConvMinWriterRoleRes"
+    },
+    "retentionSweepConv": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": "SweepRes"
+    },
+    "upgradeKBFSToImpteam": {
+      "request": [
+        {
+          "name": "tlfID",
+          "type": "TLFID"
+        },
+        {
+          "name": "teamID",
+          "type": "keybase1.TeamID"
+        }
+      ],
+      "response": null
+    },
+    "registerSharePost": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "deviceID",
+          "type": "gregor1.DeviceID"
+        },
+        {
+          "name": "outboxID",
+          "type": "OutboxID"
+        }
+      ],
+      "response": null
+    },
+    "failSharePost": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "deviceID",
+          "type": "gregor1.DeviceID"
+        },
+        {
+          "name": "outboxID",
+          "type": "OutboxID"
+        }
+      ],
+      "response": null
+    },
+    "broadcastGregorMessageToConv": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "msg",
+          "type": "gregor1.Message"
+        }
+      ],
+      "response": null
+    },
+    "teamIDOfConv": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": [
+        null,
+        "keybase1.TeamID"
+      ]
+    },
+    "serverNow": {
+      "request": [],
+      "response": "ServerNowRes"
+    },
+    "getExternalAPIKeys": {
+      "request": [
+        {
+          "name": "typs",
+          "type": {
+            "type": "array",
+            "items": "ExternalAPIKeyTyp"
+          }
+        }
+      ],
+      "response": {
+        "type": "array",
+        "items": "ExternalAPIKey"
+      }
+    },
+    "advertiseBotCommands": {
+      "request": [
+        {
+          "name": "ads",
+          "type": {
+            "type": "array",
+            "items": "RemoteBotCommandsAdvertisement"
+          }
+        }
+      ],
+      "response": "AdvertiseBotCommandsRes"
+    },
+    "clearBotCommands": {
+      "request": [],
+      "response": "ClearBotCommandsRes"
+    },
+    "getBotInfo": {
+      "request": [
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "infoHash",
+          "type": "BotInfoHash"
+        },
+        {
+          "name": "clientHashVers",
+          "type": "BotInfoHashVers"
+        }
+      ],
+      "response": "GetBotInfoRes"
     }
   },
-  "namespace": "chat.1"
+  "namespace": "chat.1",
+  "compression_type": "gzip"
 }

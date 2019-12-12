@@ -19,6 +19,18 @@
       "notify": "",
       "lint": "ignore"
     },
+    "FSPathUpdated": {
+      "request": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "response": null,
+      "oneway": true,
+      "notify": "",
+      "lint": "ignore"
+    },
     "FSSyncActivity": {
       "request": [
         {
@@ -34,10 +46,7 @@
       "request": [
         {
           "name": "edits",
-          "type": {
-            "type": "array",
-            "items": "FSNotification"
-          }
+          "type": "FSFolderEditHistory"
         },
         {
           "name": "requestID",
@@ -57,6 +66,68 @@
         {
           "name": "requestID",
           "type": "int"
+        }
+      ],
+      "response": null,
+      "oneway": true,
+      "lint": "ignore"
+    },
+    "FSOverallSyncStatusChanged": {
+      "request": [
+        {
+          "name": "status",
+          "type": "FolderSyncStatus"
+        }
+      ],
+      "response": null,
+      "oneway": true,
+      "lint": "ignore"
+    },
+    "FSFavoritesChanged": {
+      "request": [],
+      "response": null,
+      "oneway": true,
+      "lint": "ignore"
+    },
+    "FSOnlineStatusChanged": {
+      "request": [
+        {
+          "name": "online",
+          "type": "boolean"
+        }
+      ],
+      "response": null,
+      "oneway": true,
+      "lint": "ignore"
+    },
+    "FSSubscriptionNotifyPath": {
+      "request": [
+        {
+          "name": "subscriptionID",
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "topic",
+          "type": "PathSubscriptionTopic"
+        }
+      ],
+      "response": null,
+      "oneway": true,
+      "lint": "ignore"
+    },
+    "FSSubscriptionNotify": {
+      "request": [
+        {
+          "name": "subscriptionID",
+          "type": "string"
+        },
+        {
+          "name": "topic",
+          "type": "SubscriptionTopic"
         }
       ],
       "response": null,

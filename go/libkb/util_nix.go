@@ -21,7 +21,7 @@ func canExec(s string) error {
 	// Only consider non-directories that have at least one +x
 	//  bit set.
 	//
-	// TODO: Recheck this on windows!
+	// TODO: Recheck this on Windows!
 	//   See here for lookpath: http://golang.org/src/pkg/os/exec/lp_windows.go
 	//
 	// Similar to check from exec.LookPath below
@@ -56,13 +56,8 @@ func SafeWriteToFile(g SafeWriteLogger, t SafeWriter, mode os.FileMode) error {
 	return safeWriteToFileOnce(g, t, mode)
 }
 
-func RemoteSettingsRepairman(g *GlobalContext) error {
-	return nil
-}
-
-// Unicode error detection is windows only for now
-func isUnicodeMark(b []byte) bool {
-	return false
+func renameFile(_ *GlobalContext, src string, dest string) error {
+	return os.Rename(src, dest)
 }
 
 func ChangeMountIcon(oldMount string, newMount string) error {

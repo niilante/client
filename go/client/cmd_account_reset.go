@@ -11,6 +11,8 @@ import (
 	"github.com/keybase/cli"
 	"github.com/keybase/client/go/libcmdline"
 	"github.com/keybase/client/go/libkb"
+	keybase1 "github.com/keybase/client/go/protocol/keybase1"
+	"github.com/keybase/go-framed-msgpack-rpc/rpc"
 )
 
 type CmdAccountReset struct {
@@ -19,28 +21,61 @@ type CmdAccountReset struct {
 
 func NewCmdAccountReset(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Command {
 	return cli.Command{
-		Name:  "acctreset",
+		Name:  "reset",
 		Usage: "Reset account",
 		Action: func(c *cli.Context) {
-			cmd := &CmdAccountReset{Contextified: libkb.NewContextified(g)}
-			cl.ChooseCommand(cmd, "acctreset", c)
+			cmd := NewCmdAccountResetRunner(g)
+			cl.ChooseCommand(cmd, "reset", c)
 		},
 	}
 }
 
+func NewCmdAccountResetRunner(g *libkb.GlobalContext) *CmdAccountReset {
+	return &CmdAccountReset{Contextified: libkb.NewContextified(g)}
+}
+
 func (c *CmdAccountReset) ParseArgv(ctx *cli.Context) error {
 	if len(ctx.Args()) != 0 {
-		return errors.New("acctdelete takes no arguments")
+		return errors.New("reset takes no arguments")
+	}
+	return nil
+}
+
+func (c *CmdAccountReset) checkRandomPW() error {
+	cli, err := GetUserClient(c.G())
+	if err != nil {
+		return err
+	}
+	passphraseState, err := cli.LoadPassphraseState(context.Background(), 0)
+	if err != nil {
+		return err
+	}
+	if passphraseState == keybase1.PassphraseState_RANDOM {
+		return errors.New("Can't reset without a password. Set a password first")
 	}
 	return nil
 }
 
 func (c *CmdAccountReset) Run() error {
+	if err := c.checkRandomPW(); err != nil {
+		return err
+	}
+	protocols := []rpc.Protocol{
+		NewSecretUIProtocol(c.G()),
+	}
+	if err := RegisterProtocolsWithContext(protocols, c.G()); err != nil {
+		return err
+	}
 	cli, err := GetAccountClient(c.G())
 	if err != nil {
 		return err
 	}
-	return cli.ResetAccount(context.Background(), 0)
+	err = cli.ResetAccount(context.Background(), keybase1.ResetAccountArg{})
+	if err != nil {
+		return err
+	}
+	_, _ = c.G().UI.GetDumbOutputUI().PrintfStderr("Account has been reset.\n")
+	return nil
 }
 
 func (c *CmdAccountReset) GetUsage() libkb.Usage {

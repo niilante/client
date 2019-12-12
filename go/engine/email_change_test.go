@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func assertEmail(t *testing.T, g *libkb.GlobalContext, expected string) {
-	res, err := g.API.Get(libkb.APIArg{
+func assertEmail(mctx libkb.MetaContext, t *testing.T, expected string) {
+	res, err := mctx.G().API.Get(mctx, libkb.APIArg{
 		Endpoint:    "me",
 		SessionType: libkb.APISessionTypeREQUIRED,
 	})
@@ -29,7 +29,8 @@ func TestSignedEmailChange(t *testing.T) {
 
 	u := CreateAndSignupFakeUser(tc, "email")
 
-	assertEmail(t, tc.G, u.Email)
+	m := NewMetaContextForTest(tc)
+	assertEmail(m, t, u.Email)
 
 	newEmail := "new-" + u.Email
 	arg := &keybase1.EmailChangeArg{
@@ -37,12 +38,13 @@ func TestSignedEmailChange(t *testing.T) {
 	}
 
 	// using an empty secret ui to make sure existing pp doesn't come from ui prompt:
-	ctx := &Context{
+	uis := libkb.UIs{
 		SecretUI: &libkb.TestSecretUI{},
 	}
-	eng := NewEmailChange(arg, tc.G)
-	if err := RunEngine(eng, ctx); err != nil {
+	m = m.WithUIs(uis)
+	eng := NewEmailChange(tc.G, arg)
+	if err := RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
-	assertEmail(t, tc.G, newEmail)
+	assertEmail(m, t, newEmail)
 }

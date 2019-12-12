@@ -8,7 +8,7 @@ import (
 )
 
 func TestHandlerChat(t *testing.T) {
-	h := Handler()
+	h := newHandler()
 
 	var ranCmd string
 	h.Run = func(cmd *exec.Cmd) error {
@@ -51,13 +51,14 @@ const queryResponseErrUnexpected = `[INFO] 001 Random progress message
 `
 
 func TestHandlerQueryError(t *testing.T) {
-	h := Handler()
+	h := newHandler()
 
 	var ranCmd string
 	h.Run = func(cmd *exec.Cmd) error {
 		ranCmd = strings.Join(cmd.Args, " ")
-		io.WriteString(cmd.Stderr, queryResponseErr)
-		return nil
+		_ = ranCmd
+		_, err := io.WriteString(cmd.Stderr, queryResponseErr)
+		return err
 	}
 	h.FindKeybaseBinary = func() (string, error) {
 		return "/mocked/test/path/keybase", nil
@@ -79,13 +80,14 @@ func TestHandlerQueryError(t *testing.T) {
 }
 
 func TestHandlerQueryErrorUnexpected(t *testing.T) {
-	h := Handler()
+	h := newHandler()
 
 	var ranCmd string
 	h.Run = func(cmd *exec.Cmd) error {
 		ranCmd = strings.Join(cmd.Args, " ")
-		io.WriteString(cmd.Stderr, queryResponseErrUnexpected)
-		return nil
+		_ = ranCmd
+		_, err := io.WriteString(cmd.Stderr, queryResponseErrUnexpected)
+		return err
 	}
 	h.FindKeybaseBinary = func() (string, error) {
 		return "/mocked/test/path/keybase", nil
@@ -107,13 +109,13 @@ func TestHandlerQueryErrorUnexpected(t *testing.T) {
 }
 
 func TestHandlerQuery(t *testing.T) {
-	h := Handler()
+	h := newHandler()
 
 	var ranCmd string
 	h.Run = func(cmd *exec.Cmd) error {
 		ranCmd = strings.Join(cmd.Args, " ")
-		io.WriteString(cmd.Stderr, queryResponse)
-		return nil
+		_, err := io.WriteString(cmd.Stderr, queryResponse)
+		return err
 	}
 	h.FindKeybaseBinary = func() (string, error) {
 		return "/mocked/test/path/keybase", nil
@@ -143,5 +145,26 @@ func TestHandlerQuery(t *testing.T) {
 
 	if result.Username != "sometestuser" {
 		t.Errorf("invalid result value: %q", result)
+	}
+}
+
+func TestCleanCmdArg(t *testing.T) {
+	testcases := []struct {
+		Input string
+		Err   error
+	}{
+		{"shazow@reddit", nil},
+		{"shazow:twitter.com", nil},
+		{`abcABC123_@.`, nil},
+		{``, errMissingField},
+		{`a-bc${foo} bar`, errInvalidInput},
+		{"foo\nbar", errInvalidInput},
+		{"foo ", errInvalidInput},
+	}
+
+	for i, test := range testcases {
+		if _, err := checkUsernameQuery(test.Input); err != test.Err {
+			t.Errorf("case %d: got %q; want %q", i, err, test.Err)
+		}
 	}
 }

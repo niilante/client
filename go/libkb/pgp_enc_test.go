@@ -159,9 +159,12 @@ func TestPGPEncryptLong(t *testing.T) {
 
 	msg := make([]byte, 1024*1024)
 
-	rand.Read(msg)
+	_, err = rand.Read(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	G.Log.Info("msg size: %d", len(msg))
+	tc.G.Log.Info("msg size: %d", len(msg))
 
 	sink := NewBufferCloser()
 	recipients := []*PGPKeyBundle{bundleSrc, bundleDst}

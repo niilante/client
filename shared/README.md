@@ -12,11 +12,6 @@ If you really want to install Keybase, please return to the [top level Readme.md
 
 ## Keybase
 
-### Project Status
-
-Hi everyone! This folder's code is *not* ready for prime time. Use at your own risk (and never against production!)
-We are iterating quickly and a lot of the code is changing every day.
-
 ### Install
 
 ```sh
@@ -41,45 +36,157 @@ You can set environment variables for debugging:
 
 | Env     | Description |
 |---------|-------------|
-| KEYBASE_RUN_MODE | Run mode: production, staging, devel |
-| KEYBASE_LOCAL_DEBUG | For debugging |
-| KEYBASE_SHOW_DEVTOOLS | Show devtools |
-| KEYBASE_FEATURES | Feature flags |
-| KEYBASE_RPC_DELAY | Number of ms to delay all RPC calls (requires debug mode) |
-| KEYBASE_RPC_DELAY_RESULT | Number of ms to delay all RPC call callbacks (requires debug mode) |
+| KEYBASE_RUN_MODE | Run mode: prod, staging, devel |
 | NO_DASHBOARD | Don't show dashboard |
 
+You can also edit `~/Library/Logs/Keybase.app.debug` on macOS,
+`$HOME/.cache/keybase/keybase.app.debug` on Linux, or
+`%localappdata%\Keybase\keybase.app.debug` on Windows (see
+`platform.desktop.js`) to add debug flags. In particular, you probably want
+```json
+{
+  "showDevTools": true
+}
+```
+instead of toggling the dev tools after launch because of a bug where
+not all source files are available if the dev tools aren't opened at launch.
+
+### Debugging with React Developer Tools and Immutable.js Object Formatter extensions
+
+1) Install the [React Developer
+Tools](https://chrome.google.com/webstore/detail/react-developer-tools/fmkadmapgofadopljbjfkapdkoienihi)
+and the [Immutable.js Object
+Formatter](https://chrome.google.com/webstore/detail/immutablejs-object-format/hgldghadipiblonfkkicmgcbbijnpeog)
+extensions in your regular Chrome browser.
+2) Set the following environment variables and make sure
+`KEYBASE_PERF` is unset. If you're using fish shell on macOS:
+
+```
+set -e KEYBASE_PERF
+set -x KEYBASE_LOCAL_DEBUG 1
+set -x KEYBASE_DEV_TOOL_ROOTS "$HOME/Library/Application Support/Google/Chrome/Default/Extensions/fmkadmapgofadopljbjfkapdkoienihi,$HOME/Library/Application Support/Google/Chrome/Default/Extensions/hgldghadipiblonfkkicmgcbbijnpeog"
+```
+
+If you're using fish shell on Linux:
+
+```
+set -e KEYBASE_PERF
+set -x KEYBASE_LOCAL_DEBUG 1
+set -x KEYBASE_DEV_TOOL_ROOTS "$HOME/.config/google-chrome/Default/Extensions/fmkadmapgofadopljbjfkapdkoienihi,$HOME/.config/google-chrome/Default/Extensions/hgldghadipiblonfkkicmgcbbijnpeog"
+```
+
+If you're using bash on macOS:
+
+```
+unset KEYBASE_PERF
+export KEYBASE_LOCAL_DEBUG=1
+export KEYBASE_DEV_TOOL_ROOTS="$HOME/Library/Application Support/Google/Chrome/Default/Extensions/fmkadmapgofadopljbjfkapdkoienihi,$HOME/Library/Application Support/Google/Chrome/Default/Extensions/hgldghadipiblonfkkicmgcbbijnpeog"
+```
+
+If you're using bash on Linux:
+
+```
+unset KEYBASE_PERF
+export KEYBASE_LOCAL_DEBUG=1
+export KEYBASE_DEV_TOOL_ROOTS="$HOME/.config/google-chrome/Default/Extensions/fmkadmapgofadopljbjfkapdkoienihi,$HOME/.config/google-chrome/Default/Extensions/hgldghadipiblonfkkicmgcbbijnpeog"
+```
+
+(See [this code](https://github.com/keybase/client/blob/master/shared/desktop/yarn-helper/electron.js#L47) for details.)
+
+3) Run `yarn run start-hot`.
+
+If you're running Chromium instead of Google Chrome, or if you've
+installed the extension in your non-default browser, you'll have to
+change the path passed to `KEYBASE_DEV_TOOL_ROOTS`.
+
+If for some reason you don't want to use `start-hot`, you'll have to
+set `KEYBASE_DEV_TOOL_EXTENSIONS` instead of `KEYBASE_DEV_TOOL_ROOTS`,
+and you'll have to use the version subdirectory:
+
+```
+set -x KEYBASE_DEV_TOOL_EXTENSIONS "$HOME/Library/Application Support/Google/Chrome/Default/Extensions/fmkadmapgofadopljbjfkapdkoienihi/2.5.2_0,$HOME/Library/Application Support/Google/Chrome/Default/Extensions/hgldghadipiblonfkkicmgcbbijnpeog/1.7_0"
+```
+
+Note that this means you'll have to change the last path component if
+Chrome updates the extension, which can happen at any time. (See [this
+code](https://github.com/keybase/client/blob/7e9ad67c0f86a82649f2e81586986892adcdf6fa/shared/desktop/app/dev-tools.js)
+and [the Electron
+docs](https://electron.atom.io/docs/tutorial/devtools-extension/) for
+details.)
+
+Then you can run, e.g. `yarn run start`.
+
+4) Make sure to check 'Enable custom formatters' in the DevTools settings for Immutable.js Object Formatter.
+
+## Android
+see [Android Docs](docs/android/overview.md)
+
 ### iOS
-
-```sh
-# Build the go keybase.framework
-yarn run rn-gobuild-ios
-
-# Open workspace (not xcodeproj)
-open react-native/ios/Keybase.xcworkspace
-```
-
-Then select the target `Keybase` and run.
-
-### Android
-
-Follow instructions at https://facebook.github.io/react-native/docs/getting-started.html
-to install and configure Android.
-
-```sh
-# Build the go keybaselib
-yarn run rn-gobuild-android
-
-# Install the app on your device
-react-native run-android
-```
-
-
+see [iOS docs](./docs/ios/running.md)
 
 ### Troubleshooting
 
-If you run into weird issues with your packager this may be due to a stale cache, run this command to wipe your local cache:
+#### Android
+[Android Troubleshooting](docs/react-native/running.md#troubleshooting)
 
-```sh
-yarn run rn-packager-wipe-cache
+#### React Native
+[React Native Troubleshooting](docs/react-native/troubleshooting.md)
+
+### Updating `react-native`
+
+Look at [this page](https://react-native-community.github.io/upgrade-helper/) to help see what you need to change locally
+
+### Updating `electron`
+
+We host the electron binaries used for our build process in keybase.pub. If you update versions copy files from https://github.com/electron/electron/releases/ to https://keybase.pub/kbelectron/electron-download/v{version}. Make sure to get the SHASUM256.txt file also. This only affects the build machines
+
+## Storybook
+
+The app uses [storybook](https://storybook.js.org/) snapshots. If you make a change that changes the html output of a story, tests will catch the difference.
+
+To update the stories, first determine which stories changed. Run the tests `yarn test Storyshots` and look for lines containing '●':
+
+Run the local storybook server. Verify that the affected stories look correct.
+
+```
+yarn storybook
+```
+
+To update the snapshot file run:
+
+```
+yarn test -u Storyshots
+```
+
+## Misc
+
+### Updating the list of countries with SMS support
+
+In order to update the list of countries supported by Amazon SNS, run
+the [update-data.sh](https://github.com/keybase/client/blob/master/shared/util/phone-numbers/sms-support/update-data.sh)
+script. It will first fetch the JSON from Amazon's public S3 bucket and
+transform it for use in our internal country filtering code.
+
+### ESLint in VSCode
+
+VSCode's ESLint extension needs to know where to look for .eslintrc. Add this to `REPO/.vscode/settings.json`.
+
+```
+{ "eslint.workingDirectories": ["shared"] }
+```
+
+### React Devtools standalone
+
+If you want to use react devtools to examine the DOM of a running RN app in the simulator, you'll need:
+
+```
+yarn global add react-devtools@3
+```
+
+### Watchman
+
+You'll need to have watchman installed if you're running out of file descriptors:
+
+```
+brew install watchman
 ```

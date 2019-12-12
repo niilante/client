@@ -36,6 +36,10 @@ func (c *CmdWatchdog) checkAlreadyRunning() bool {
 		return false
 	}
 	conn, err := s.DialSocket()
+	if err != nil {
+		c.G().Log.Debug("checkAlreadyRunning DialSocket error: %s", err)
+		return false
+	}
 	if conn != nil {
 		conn.Close()
 		return true
@@ -80,7 +84,7 @@ func (c *CmdWatchdog) Run() (err error) {
 
 		pstate, err := p.Wait()
 
-		if err != nil || pstate.Exited() == false {
+		if err != nil || !pstate.Exited() {
 			c.G().Log.Warning("Watchdog ends service wait with no error or exit")
 			return err
 		}

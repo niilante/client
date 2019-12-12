@@ -5,29 +5,45 @@
 
 package libkb
 
+import (
+	"strings"
+
+	"github.com/PuerkitoBio/goquery"
+)
+
 type StubAPIEngine struct {
 	*ExternalAPIEngine
 }
 
-func NewStubAPIEngine() *StubAPIEngine {
+func NewStubAPIEngine(g *GlobalContext) *StubAPIEngine {
 	return &StubAPIEngine{
-		ExternalAPIEngine: &ExternalAPIEngine{BaseAPIEngine{clients: make(map[int]*Client)}},
+		ExternalAPIEngine: &ExternalAPIEngine{BaseAPIEngine{Contextified: NewContextified(g), clients: make(map[int]*Client)}},
 	}
 }
 
-func (e *StubAPIEngine) Get(arg APIArg) (res *ExternalAPIRes, err error) {
-	return e.ExternalAPIEngine.Get(arg)
+func (e *StubAPIEngine) Get(m MetaContext, arg APIArg) (res *ExternalAPIRes, err error) {
+	return e.ExternalAPIEngine.Get(m, arg)
 }
 
-func (e *StubAPIEngine) GetHTML(arg APIArg) (res *ExternalHTMLRes, err error) {
-	return e.ExternalAPIEngine.GetHTML(arg)
+func (e *StubAPIEngine) GetHTML(m MetaContext, arg APIArg) (res *ExternalHTMLRes, err error) {
+	if body, ok := htmlAPIStubs[arg.Endpoint]; ok {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		return &ExternalHTMLRes{
+			GoQuery:    doc,
+			HTTPStatus: 200,
+		}, nil
+	}
+	return e.ExternalAPIEngine.GetHTML(m, arg)
 }
 
-func (e *StubAPIEngine) GetText(arg APIArg) (*ExternalTextRes, error) {
+func (e *StubAPIEngine) GetText(m MetaContext, arg APIArg) (*ExternalTextRes, error) {
 	if body, ok := apiStubs[arg.Endpoint]; ok {
 		return &ExternalTextRes{Body: body, HTTPStatus: 200}, nil
 	}
-	return e.ExternalAPIEngine.GetText(arg)
+	return e.ExternalAPIEngine.GetText(m, arg)
 }
 
 var apiStubs = map[string]string{

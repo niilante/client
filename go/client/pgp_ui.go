@@ -15,6 +15,7 @@ import (
 )
 
 type PgpUI struct {
+	libkb.Contextified
 	w io.Writer
 }
 
@@ -24,11 +25,11 @@ func NewPgpUIProtocol(g *libkb.GlobalContext) rpc.Protocol {
 
 func (p PgpUI) OutputSignatureSuccess(_ context.Context, arg keybase1.OutputSignatureSuccessArg) error {
 	signedAt := keybase1.FromTime(arg.SignedAt)
-	un := ColorString("bold", arg.Username)
+	un := ColorString(p.G(), "bold", arg.Username)
 	output := func(fmtString string, args ...interface{}) {
 		s := fmt.Sprintf(fmtString, args...)
-		s = ColorString("green", s)
-		p.w.Write([]byte(s))
+		s = ColorString(p.G(), "green", s)
+		_, _ = p.w.Write([]byte(s))
 	}
 
 	if signedAt.IsZero() {
@@ -44,8 +45,8 @@ func (p PgpUI) OutputSignatureSuccessNonKeybase(ctx context.Context, arg keybase
 	signedAt := keybase1.FromTime(arg.SignedAt)
 	output := func(fmtString string, args ...interface{}) {
 		s := fmt.Sprintf(fmtString, args...)
-		s = ColorString("green", s)
-		p.w.Write([]byte(s))
+		s = ColorString(p.G(), "green", s)
+		_, _ = p.w.Write([]byte(s))
 	}
 
 	if signedAt.IsZero() {
@@ -59,7 +60,7 @@ func (p PgpUI) KeyGenerated(ctx context.Context, arg keybase1.KeyGeneratedArg) e
 	return nil
 }
 
-func (p PgpUI) ShouldPushPrivate(ctx context.Context, sessionID int) (bool, error) {
+func (p PgpUI) ShouldPushPrivate(ctx context.Context, arg keybase1.ShouldPushPrivateArg) (bool, error) {
 	return false, nil
 }
 

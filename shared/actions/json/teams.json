@@ -1,0 +1,297 @@
+{
+  "prelude": [
+    "import * as ChatTypes from '../constants/types/chat2'",
+    "import * as Types from '../constants/types/teams'",
+    "import {RetentionPolicy} from '../constants/types/retention-policy'"
+  ],
+  "actions": {
+    "addUserToTeams": {
+      "role": "Types.TeamRoleType",
+      "teams": "Array<string>",
+      "user": "string"
+    },
+    "clearNavBadges": {},
+    "createNewTeam": {
+      "fromChat?": "boolean",
+      "joinSubteam": "boolean",
+      "teamname": "string",
+      "thenAddMembers?": "Omit<_AddToTeamPayload, 'teamID'>"
+    },
+    "createNewTeamFromConversation": {
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "teamname": "string"
+    },
+    "teamCreated": {
+      "fromChat": "boolean",
+      "teamID": "Types.TeamID",
+      "teamname": "string"
+    },
+    "createChannel": {
+      "teamname": "string",
+      "channelname": "string",
+      "description": "string | null"
+    },
+    "clearAddUserToTeamsResults": {},
+    "setAddUserToTeamsResults": {
+      "error": "boolean",
+      "results": "string"
+    },
+    "setEmailInviteError": {
+      "message": "string",
+      "malformed": "Array<string>"
+    },
+    "getChannelInfo": {
+      "_description": "Fetches the channel information for a single channel in a team from the server.",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "teamname": "string"
+    },
+    "getChannels": {
+      "_description": "Fetches the channel information for all channels in a team from the server. Should only be called for components that need the full list.",
+      "teamname": "string"
+    },
+    "getTeams": {
+      "_description": "Load team list if we are stale. _subscribe is for use by teams/subscriber only.",
+      "_subscribe?": "boolean",
+      "forceReload?": "boolean"
+    },
+    "unsubscribeTeamList": {
+      "_description": "Don't eagerly reload team list anymore."
+    },
+    "getDetails": {
+      "teamname": "string",
+      "clearInviteLoadingKey?": "string"
+    },
+    "getMembers": {
+      "teamname": "string"
+    },
+    "setMembers": {
+      "teamname": "string",
+      "members": "Map<string, Types.MemberInfo>"
+    },
+    "getTeamProfileAddList": {
+      "username": "string"
+    },
+    "getTeamPublicity": {
+      "teamname": "string"
+    },
+    "addTeamWithChosenChannels": {
+      "teamname": "string"
+    },
+    "saveChannelMembership": {
+      "teamname": "string",
+      "oldChannelState": "Types.ChannelMembershipState",
+      "newChannelState": "Types.ChannelMembershipState"
+    },
+    "addParticipant": {
+      "teamname": "string",
+      "conversationIDKey": "ChatTypes.ConversationIDKey"
+    },
+    "removeParticipant": {
+      "teamname": "string",
+      "conversationIDKey": "ChatTypes.ConversationIDKey"
+    },
+    "deleteTeam": {
+      "teamID": "Types.TeamID"
+    },
+    "inviteToTeamByEmail": {
+      "invitees": "string",
+      "role": "Types.TeamRoleType",
+      "teamname": "string",
+      "loadingKey?": "string"
+    },
+    "inviteToTeamByPhone": {
+      "teamname": "string",
+      "role": "Types.TeamRoleType",
+      "phoneNumber": "string",
+      "fullName": "string",
+      "loadingKey?": "string"
+    },
+    "joinTeam": {
+      "teamname": "string"
+    },
+    "leaveTeam": {
+      "teamname": "string",
+      "permanent": "boolean",
+      "context": "'teams' | 'chat'"
+    },
+    "leftTeam": {
+      "_description": "We successfully left a team",
+      "teamname": "string",
+      "context": "'teams' | 'chat'"
+    },
+    "addToTeam": {
+      "teamID": "Types.TeamID",
+      "users": "Array<{assertion: string, role: Types.TeamRoleType}>",
+      "sendChatNotification": "boolean",
+      "fromTeamBuilder?": "boolean"
+    },
+    "addedToTeam": {
+      "error?": "string",
+      "fromTeamBuilder?": "boolean"
+    },
+    "reAddToTeam": {
+      "teamID": "Types.TeamID",
+      "username": "string"
+    },
+    "editTeamDescription": {
+      "teamname": "string",
+      "description": "string"
+    },
+    "uploadTeamAvatar": {
+      "crop?": "RPCTypes.ImageCropRect",
+      "filename": "string",
+      "sendChatNotification": "boolean",
+      "teamname": "string"
+    },
+    "editMembership": {
+      "teamname": "string",
+      "username": "string",
+      "role": "Types.TeamRoleType"
+    },
+    "removeMemberOrPendingInvite": {
+      "email": "string",
+      "teamname": "string",
+      "username": "string",
+      "inviteID": "string",
+      "loadingKey?": "string"
+    },
+    "ignoreRequest": {
+      "teamname": "string",
+      "username": "string"
+    },
+    "setMemberPublicity": {
+      "teamname": "string",
+      "showcase": "boolean"
+    },
+    "setPublicity": {
+      "teamname": "string",
+      "settings": "Types.PublicitySettings"
+    },
+    "setChannelCreationError": {
+      "error": "string"
+    },
+    "setTeamsWithChosenChannels": {
+      "teamsWithChosenChannels": "Set<Types.Teamname>"
+    },
+    "setTeamCreationError": {
+      "error": "string"
+    },
+    "setTeamInviteError": {
+      "error": "string"
+    },
+    "setTeamJoinError": {
+      "error": "string"
+    },
+    "setTeamJoinSuccess": {
+      "success": "boolean",
+      "teamname": "string"
+    },
+    "setTeamRetentionPolicy": {
+      "teamname": "string",
+      "retentionPolicy": "RetentionPolicy"
+    },
+    "setTeamLoadingInvites": {
+      "teamname": "string",
+      "loadingKey": "string",
+      "isLoading": "boolean"
+    },
+    "setTeamDetails": {
+      "teamID": "Types.TeamID",
+      "teamname": "string",
+      "members": "RPCTypes.TeamMembersDetails",
+      "settings": "RPCTypes.TeamSettings",
+      "invites": "Array<Types.InviteInfo>",
+      "subteams": "Array<Types.Teamname>",
+      "requests": "Map<string, Array<string>>",
+      "subteamIDs": "Set<Types.TeamID>"
+    },
+    "setTeamCanPerform": {
+      "teamname": "string",
+      "teamID": "Types.TeamID",
+      "teamOperation": "Types.TeamOperations"
+    },
+    "setTeamPublicitySettings": {
+      "teamname": "string",
+      "publicity": "Types._PublicitySettings"
+    },
+    "setTeamChannelInfo": {
+      "teamname": "string",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "channelInfo": "Types.ChannelInfo"
+    },
+    "setTeamChannels": {
+      "teamname": "string",
+      "channelInfos": "Map<ChatTypes.ConversationIDKey, Types.ChannelInfo>"
+    },
+    "setTeamInfo": {
+      "teamnames": "Set<Types.Teamname>",
+      "teamNameToID": "Map<Types.Teamname, string>",
+      "teamDetails": "Map<Types.TeamID, Types.TeamDetails>"
+    },
+    "setTeamProfileAddList": {
+      "teamlist": "Array<Types.TeamProfileAddList>"
+    },
+    "setTeamAccessRequestsPending": {
+      "accessRequestsPending": "Set<Types.Teamname>"
+    },
+    "setNewTeamInfo": {
+      "deletedTeams": "Array<RPCTypes.DeletedTeamInfo>",
+      "newTeams": "Set<Types.TeamID>",
+      "newTeamRequests": "Array<Types.TeamID>",
+      "teamNameToResetUsers": "Map<Types.Teamname, Set<Types.ResetUser>>"
+    },
+    "setTeamSawChatBanner": {},
+    "setTeamSawSubteamsBanner": {},
+    "updateChannelName": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "newChannelName": "string"
+    },
+    "setUpdatedChannelName": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "newChannelName": "string"
+    },
+    "updateTopic": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "newTopic": "string"
+    },
+    "setUpdatedTopic": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey",
+      "newTopic": "string"
+    },
+    "deleteChannelConfirmed": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey"
+    },
+    "deleteChannelInfo": {
+      "teamname": "Types.Teamname",
+      "conversationIDKey": "ChatTypes.ConversationIDKey"
+    },
+    "checkRequestedAccess": {
+      "teamname": "string"
+    },
+    "getTeamRetentionPolicy": {
+      "_description": "Gets the team retention policy and stores in `state.entities.teams.teamNameToRetentionPolicy`.",
+      "teamname": "string"
+    },
+    "saveTeamRetentionPolicy": {
+      "_description": "Sets the retention policy for a team. The store will be updated automatically.",
+      "teamname": "string",
+      "policy": "RetentionPolicy"
+    },
+    "renameTeam": {
+      "_description": "Rename a subteam",
+      "oldName": "string",
+      "newName": "string"
+    },
+    "setTeamRoleMapLatestKnownVersion": {
+      "version": "number"
+    },
+    "setTeamRoleMap": {
+      "map": "Types.TeamRoleMap"
+    }
+  }
+}

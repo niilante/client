@@ -4,6 +4,11 @@
     {
       "path": "common.avdl",
       "type": "idl"
+    },
+    {
+      "path": "../gregor1",
+      "type": "idl",
+      "import_as": "gregor1"
     }
   ],
   "types": [
@@ -12,6 +17,79 @@
       "name": "ChatConversationID",
       "fields": [],
       "typedef": "bytes"
+    },
+    {
+      "type": "record",
+      "name": "TeamMemberOutReset",
+      "fields": [
+        {
+          "type": "TeamID",
+          "name": "teamID"
+        },
+        {
+          "type": "string",
+          "name": "teamname"
+        },
+        {
+          "type": "string",
+          "name": "username"
+        },
+        {
+          "type": "UID",
+          "name": "uid"
+        },
+        {
+          "type": "gregor1.MsgID",
+          "name": "id"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "DeletedTeamInfo",
+      "fields": [
+        {
+          "type": "string",
+          "name": "teamName"
+        },
+        {
+          "type": "string",
+          "name": "deletedBy"
+        },
+        {
+          "type": "gregor1.MsgID",
+          "name": "id"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "WalletAccountInfo",
+      "fields": [
+        {
+          "type": "string",
+          "name": "accountID"
+        },
+        {
+          "type": "int",
+          "name": "numUnread"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ResetState",
+      "fields": [
+        {
+          "type": "Time",
+          "name": "endTime",
+          "jsonkey": "end_time"
+        },
+        {
+          "type": "boolean",
+          "name": "active"
+        }
+      ]
     },
     {
       "type": "record",
@@ -31,11 +109,87 @@
           "name": "newFollowers"
         },
         {
+          "type": "int",
+          "name": "inboxVers"
+        },
+        {
+          "type": "int",
+          "name": "homeTodoItems"
+        },
+        {
+          "type": "int",
+          "name": "unverifiedEmails"
+        },
+        {
+          "type": "int",
+          "name": "unverifiedPhones"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "DeviceID"
+          },
+          "name": "newDevices"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "DeviceID"
+          },
+          "name": "revokedDevices"
+        },
+        {
           "type": {
             "type": "array",
             "items": "BadgeConversationInfo"
           },
           "name": "conversations"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "string"
+          },
+          "name": "newGitRepoGlobalUniqueIDs"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "TeamID"
+          },
+          "name": "newTeams"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "DeletedTeamInfo"
+          },
+          "name": "deletedTeams"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "TeamID"
+          },
+          "name": "newTeamAccessRequests"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "TeamMemberOutReset"
+          },
+          "name": "teamsWithResetUsers"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "WalletAccountInfo"
+          },
+          "name": "unreadWalletAccounts"
+        },
+        {
+          "type": "ResetState",
+          "name": "resetState"
         }
       ]
     },
@@ -48,9 +202,16 @@
           "name": "convID"
         },
         {
+          "type": {
+            "type": "map",
+            "values": "int",
+            "keys": "DeviceType"
+          },
+          "name": "badgeCounts"
+        },
+        {
           "type": "int",
-          "name": "UnreadMessages",
-          "lint": "ignore"
+          "name": "unreadMessages"
         }
       ]
     }

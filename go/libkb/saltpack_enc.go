@@ -4,34 +4,38 @@
 package libkb
 
 import (
+	"errors"
 	"io"
 
 	"github.com/keybase/saltpack"
 )
 
 type SaltpackEncryptArg struct {
-	Source         io.Reader
-	Sink           io.WriteCloser
-	Receivers      []NaclDHKeyPublic
-	Sender         NaclDHKeyPair
-	SenderSigning  NaclSigningKeyPair
-	Binary         bool
-	HideRecipients bool
-	// Temporary
-	Signcrypt          bool
+	Source             io.Reader
+	Sink               io.WriteCloser
+	Receivers          []NaclDHKeyPublic
+	Sender             NaclDHKeyPair
+	SenderSigning      NaclSigningKeyPair
+	Binary             bool
+	EncryptionOnlyMode bool
 	SymmetricReceivers []saltpack.ReceiverSymmetricKey
+	SaltpackVersion    saltpack.Version
+
+	VisibleRecipientsForTesting bool
 }
 
 // SaltpackEncrypt reads from the given source, encrypts it for the given
 // receivers from the given sender, and writes it to sink.  If
 // Binary is false, the data written to sink will be armored.
-func SaltpackEncrypt(g *GlobalContext, arg *SaltpackEncryptArg) error {
+func SaltpackEncrypt(m MetaContext, arg *SaltpackEncryptArg) error {
 	var receiverBoxKeys []saltpack.BoxPublicKey
 	for _, k := range arg.Receivers {
-		if arg.HideRecipients {
-			receiverBoxKeys = append(receiverBoxKeys, hiddenNaclBoxPublicKey(k))
-		} else {
+		// Since signcryption became the default, we never use visible
+		// recipients in encryption mode, except in tests.
+		if arg.VisibleRecipientsForTesting {
 			receiverBoxKeys = append(receiverBoxKeys, naclBoxPublicKey(k))
+		} else {
+			receiverBoxKeys = append(receiverBoxKeys, hiddenNaclBoxPublicKey(k))
 		}
 	}
 
@@ -40,19 +44,32 @@ func SaltpackEncrypt(g *GlobalContext, arg *SaltpackEncryptArg) error {
 		bsk = naclBoxSecretKey(arg.Sender)
 	}
 
+	// If the version is unspecified, default to the current version.
+	saltpackVersion := arg.SaltpackVersion
+	if saltpackVersion == (saltpack.Version{}) {
+		saltpackVersion = saltpack.CurrentVersion()
+	}
+
 	var plainsink io.WriteCloser
 	var err error
-	if arg.Signcrypt {
+	if !arg.EncryptionOnlyMode {
+		if arg.SaltpackVersion.Major == 1 {
+			return errors.New("specifying saltpack version 1 requires repudiable authentication")
+		}
+		var signer saltpack.SigningSecretKey
+		if !arg.SenderSigning.IsNil() {
+			signer = saltSigner{arg.SenderSigning}
+		}
 		if arg.Binary {
-			plainsink, err = saltpack.NewSigncryptSealStream(arg.Sink, emptyKeyring{}, saltSigner{arg.SenderSigning}, receiverBoxKeys, arg.SymmetricReceivers)
+			plainsink, err = saltpack.NewSigncryptSealStream(arg.Sink, emptyKeyring{}, signer, receiverBoxKeys, arg.SymmetricReceivers)
 		} else {
-			plainsink, err = saltpack.NewSigncryptArmor62SealStream(arg.Sink, emptyKeyring{}, saltSigner{arg.SenderSigning}, receiverBoxKeys, arg.SymmetricReceivers, KeybaseSaltpackBrand)
+			plainsink, err = saltpack.NewSigncryptArmor62SealStream(arg.Sink, emptyKeyring{}, signer, receiverBoxKeys, arg.SymmetricReceivers, KeybaseSaltpackBrand)
 		}
 	} else {
 		if arg.Binary {
-			plainsink, err = saltpack.NewEncryptStream(arg.Sink, bsk, receiverBoxKeys)
+			plainsink, err = saltpack.NewEncryptStream(saltpackVersion, arg.Sink, bsk, receiverBoxKeys)
 		} else {
-			plainsink, err = saltpack.NewEncryptArmor62Stream(arg.Sink, bsk, receiverBoxKeys, KeybaseSaltpackBrand)
+			plainsink, err = saltpack.NewEncryptArmor62Stream(saltpackVersion, arg.Sink, bsk, receiverBoxKeys, KeybaseSaltpackBrand)
 		}
 	}
 	if err != nil {
@@ -64,14 +81,10 @@ func SaltpackEncrypt(g *GlobalContext, arg *SaltpackEncryptArg) error {
 		return err
 	}
 
-	g.Log.Debug("Encrypt: wrote %d bytes", n)
+	m.Debug("Encrypt: wrote %d bytes", n)
 
 	if err := plainsink.Close(); err != nil {
 		return err
 	}
-	if err := arg.Sink.Close(); err != nil {
-		return err
-	}
-
-	return nil
+	return arg.Sink.Close()
 }

@@ -1,5 +1,0 @@
-// @flow
-import {Component} from 'react'
-
-export type Props = any
-declare export default class Box extends Component<void, Props, void> { }

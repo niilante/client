@@ -12,6 +12,9 @@ import (
 	"os"
 
 	"github.com/keybase/client/go/libkb"
+	"github.com/keybase/client/go/terminalescaper"
+	isatty "github.com/mattn/go-isatty"
+
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
 
@@ -110,6 +113,18 @@ func (b *StdinSource) Seek(offset int64, whence int) (int64, error) {
 	return 0, errors.New("StdinSource does not support Seek")
 }
 
+// isValidFile verifies the file in question is not actually a directory.
+func isValidFile(file *os.File) error {
+	finfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if mode := finfo.Mode(); mode.IsDir() {
+		return fmt.Errorf("A directory is not a valid file")
+	}
+	return nil
+}
+
 type FileSource struct {
 	name string
 	file *os.File
@@ -122,6 +137,9 @@ func NewFileSource(s string) *FileSource {
 func (s *FileSource) Open() error {
 	f, err := os.OpenFile(s.name, os.O_RDONLY, 0)
 	if err != nil {
+		return err
+	}
+	if err = isValidFile(f); err != nil {
 		return err
 	}
 	s.file = f
@@ -197,7 +215,33 @@ func (s *StdoutSink) Write(b []byte) (n int, err error) {
 
 func (s *StdoutSink) HitError(e error) error { return nil }
 
+// EscapedSink can be used to write data to the underlying Sink, while transparently sanitizing it.
+// If an error occurs writing to an EscapedSink, no more data will be
+// accepted and all subsequent writes will return the error.
+type EscapedSink struct {
+	err error
+	Sink
+}
+
+// Write writes p to the underlying Sink, after sanitizing it.
+// It returns n = len(p) on a successful write (regardless of how much data is written to the underlying Sink).
+// This is because the escaping function might alter the actual dimension of the data, but the caller is interested
+// in knowing how much of what they wanted to write was actually written. In case of errors it (conservatively) returns n=0
+// and the error, and no other writes are possible.
+func (s *EscapedSink) Write(p []byte) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	_, err := s.Sink.Write(terminalescaper.CleanBytes(p))
+	if err == nil {
+		return len(p), nil
+	}
+	s.err = err
+	return 0, err
+}
+
 type FileSink struct {
+	libkb.Contextified
 	name   string
 	file   *os.File
 	bufw   *bufio.Writer
@@ -206,8 +250,8 @@ type FileSink struct {
 	failed bool
 }
 
-func NewFileSink(s string) *FileSink {
-	return &FileSink{name: s}
+func NewFileSink(g *libkb.GlobalContext, s string) *FileSink {
+	return &FileSink{Contextified: libkb.NewContextified(g), name: s}
 }
 
 func (s *FileSink) Open() error {
@@ -229,6 +273,10 @@ func (s *FileSink) lazyOpen() error {
 			s.failed = true
 			return fmt.Errorf("Failed to open %s for writing: %s",
 				s.name, err)
+		}
+		if err := isValidFile(f); err != nil {
+			s.failed = true
+			return err
 		}
 		s.file = f
 		s.bufw = bufio.NewWriter(f)
@@ -259,7 +307,7 @@ func (s *FileSink) Close() error {
 func (s *FileSink) HitError(e error) error {
 	var err error
 	if e != nil && s.opened {
-		G.Log.Debug("Deleting file %s after error %s", s.name, e)
+		s.G().Log.Debug("Deleting file %s after error %s", s.name, e)
 		err = os.Remove(s.name)
 	}
 	return err
@@ -267,20 +315,29 @@ func (s *FileSink) HitError(e error) error {
 }
 
 type UnixFilter struct {
-	sink   Sink
-	source Source
+	libkb.Contextified
+	sink    Sink
+	source  Source
+	msg     string // input
+	infile  string
+	outfile string
 }
 
-func initSink(fn string) Sink {
+func initSink(g *libkb.GlobalContext, fn string) Sink {
 	if len(fn) == 0 || fn == "-" {
-		return &StdoutSink{}
+		if g.Env.GetDisplayRawUntrustedOutput() || !isatty.IsTerminal(os.Stdout.Fd()) {
+			return &StdoutSink{}
+		}
+		return &EscapedSink{Sink: &StdoutSink{}}
 	}
-	return NewFileSink(fn)
+	return NewFileSink(g, fn)
 }
+
+var ErrDuplicateSource = errors.New("Can't handle both a passed message and an infile")
 
 func initSource(msg, infile string) (Source, error) {
 	if len(msg) > 0 && len(infile) > 0 {
-		return nil, fmt.Errorf("Can't handle both a passed message and an infile")
+		return nil, ErrDuplicateSource
 	}
 	if len(msg) > 0 {
 		return NewBufferSource(msg), nil
@@ -291,31 +348,45 @@ func initSource(msg, infile string) (Source, error) {
 	return NewFileSource(infile), nil
 }
 
-func (u *UnixFilter) FilterInit(msg, infile, outfile string) (err error) {
-	u.source, err = initSource(msg, infile)
-	if err == nil {
-		u.sink = initSink(outfile)
+func (u *UnixFilter) FilterInit(g *libkb.GlobalContext, msg, infile, outfile string) (err error) {
+	if len(msg) > 0 && len(infile) > 0 {
+		return ErrDuplicateSource
 	}
-	return err
+	u.msg = msg
+	u.infile = infile
+	u.outfile = outfile
+	return nil
 }
 
-func (u *UnixFilter) FilterOpen() error {
-	err := u.sink.Open()
-	if err == nil {
-		err = u.source.Open()
+func (u *UnixFilter) FilterOpen(g *libkb.GlobalContext) (err error) {
+	if u.source, err = initSource(u.msg, u.infile); err != nil {
+		return err
 	}
-	return err
+	u.sink = initSink(g, u.outfile)
+
+	if err = u.sink.Open(); err != nil {
+		return err
+	}
+	if err = u.source.Open(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (u *UnixFilter) Close(inerr error) error {
-	e1 := u.source.CloseWithError(inerr)
-	e2 := u.sink.Close()
-	e3 := u.sink.HitError(inerr)
+	var e1, e2, e3 error
+	if u.source != nil {
+		e1 = u.source.CloseWithError(inerr)
+	}
+	if u.sink != nil {
+		e2 = u.sink.Close()
+		e3 = u.sink.HitError(inerr)
+	}
 	return libkb.PickFirstError(e1, e2, e3)
 }
 
 func (u *UnixFilter) ClientFilterOpen(g *libkb.GlobalContext) (snk, src keybase1.Stream, err error) {
-	if err = u.FilterOpen(); err != nil {
+	if err = u.FilterOpen(g); err != nil {
 		return
 	}
 	snk = g.XStreams.ExportWriter(u.sink)

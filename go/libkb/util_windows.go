@@ -6,18 +6,17 @@
 package libkb
 
 import (
-	"errors"
-	"io"
+	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 
-	"github.com/kardianos/osext"
+	"unicode/utf16"
 
+	"github.com/keybase/client/go/utils"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -31,12 +30,11 @@ type GUID struct {
 
 // 3EB685DB-65F9-4CF6-A03A-E3EF65729F3D
 var (
-	FOLDERID_RoamingAppData = GUID{0x3EB685DB, 0x65F9, 0x4CF6, [8]byte{0xA0, 0x3A, 0xE3, 0xEF, 0x65, 0x72, 0x9F, 0x3D}}
-)
+	FOLDERIDRoamingAppData = GUID{0x3EB685DB, 0x65F9, 0x4CF6, [8]byte{0xA0, 0x3A, 0xE3, 0xEF, 0x65, 0x72, 0x9F, 0x3D}}
+	// F1B32785-6FBA-4FCF-9D55-7B8E7F157091
 
-// F1B32785-6FBA-4FCF-9D55-7B8E7F157091
-var (
-	FOLDERID_LocalAppData = GUID{0xF1B32785, 0x6FBA, 0x4FCF, [8]byte{0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91}}
+	FOLDERIDLocalAppData = GUID{0xF1B32785, 0x6FBA, 0x4FCF, [8]byte{0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91}}
+	FOLDERIDSystem       = GUID{0x1AC14E77, 0x02E7, 0x4E5D, [8]byte{0xB7, 0x44, 0x2E, 0xB1, 0xAE, 0x51, 0x98, 0xB7}}
 )
 
 var (
@@ -63,37 +61,68 @@ func PosixLineEndings(arg string) string {
 	return strings.Replace(arg, "\r", "", -1)
 }
 
-func coTaskMemFree(pv uintptr) {
+func coTaskMemFree(pv unsafe.Pointer) {
 	syscall.Syscall(procCoTaskMemFree.Addr(), 1, uintptr(pv), 0, 0)
 	return
 }
 
-func GetDataDir(id GUID) (string, error) {
-
-	var pszPath uintptr
+func GetDataDir(id GUID, name, envname string) (string, error) {
+	var pszPath unsafe.Pointer
+	// https://msdn.microsoft.com/en-us/library/windows/desktop/bb762188(v=vs.85).aspx
+	// When this method returns, pszPath contains the address of a pointer to a null-terminated
+	// Unicode string that specifies the path of the known folder. The calling process
+	// is responsible for freeing this resource once it is no longer needed by calling
+	// coTaskMemFree.
+	//
+	// It's safe for pszPath to point to memory not managed by Go:
+	// see
+	// https://groups.google.com/d/msg/golang-nuts/ls7Eg7Ye9pU/ye1GLs8dBwAJ
+	// for details.
 	r0, _, _ := procSHGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&id)), uintptr(0), uintptr(0), uintptr(unsafe.Pointer(&pszPath)))
-	if r0 != 0 {
-		return "", errors.New("can't get FOLDERID_RoamingAppData")
+	if uintptr(pszPath) != 0 {
+		defer coTaskMemFree(pszPath)
+	}
+	// Sometimes r0 == 0 and there still isn't a valid string returned
+	if r0 != 0 || uintptr(pszPath) == 0 {
+		return "", fmt.Errorf("can't get %s; HRESULT=%d, pszPath=%x", name, r0, pszPath)
 	}
 
-	defer coTaskMemFree(pszPath)
+	var rawUnicode []uint16
+	for i := uintptr(0); ; i++ {
+		u16 := *(*uint16)(unsafe.Pointer(uintptr(pszPath) + 2*i))
+		if u16 == 0 {
+			break
+		}
+		if i == 1<<16 {
+			return "", fmt.Errorf("%s path has more than 65535 characters", name)
+		}
 
-	// go vet: "possible misuse of unsafe.Pointer"
-	folder := syscall.UTF16ToString((*[1 << 16]uint16)(unsafe.Pointer(pszPath))[:])
+		rawUnicode = append(rawUnicode, u16)
+	}
+
+	folder := string(utf16.Decode(rawUnicode))
 
 	if len(folder) == 0 {
-		return "", errors.New("can't get AppData directory")
+		// Try the environment as a backup
+		folder = os.Getenv(envname)
+		if len(folder) == 0 {
+			return "", fmt.Errorf("can't get %s directory", envname)
+		}
 	}
 
 	return folder, nil
 }
 
 func AppDataDir() (string, error) {
-	return GetDataDir(FOLDERID_RoamingAppData)
+	return GetDataDir(FOLDERIDRoamingAppData, "FOLDERIDRoamingAppData", "APPDATA")
 }
 
 func LocalDataDir() (string, error) {
-	return GetDataDir(FOLDERID_LocalAppData)
+	return GetDataDir(FOLDERIDLocalAppData, "FOLDERIDLocalAppData", "LOCALAPPDATA")
+}
+
+func SystemDir() (string, error) {
+	return GetDataDir(FOLDERIDSystem, "FOLDERIDSystem", "")
 }
 
 // SafeWriteToFile retries safeWriteToFileOnce a few times on Windows,
@@ -114,161 +143,33 @@ func SafeWriteToFile(g SafeWriteLogger, t SafeWriter, mode os.FileMode) error {
 	return err
 }
 
-func copyFile(src string, dest string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	destFile, err := os.Create(dest) // creates if file doesn't exist
-	if err != nil {
-		return err
-	}
-	defer destFile.Close()
-
-	_, err = io.Copy(destFile, srcFile) // check first var for number of bytes copied
-	if err != nil {
-		return err
-	}
-
-	err = destFile.Sync()
-	return err
-}
-
-// These are the really important ones, so we'll copy first and then delete the old ones,
-// undoing on failure.
-func moveKeyFiles(g *GlobalContext, oldHome string, currentHome string) (bool, error) {
+// renameFile performs some retries on Windows,
+// similar to SafeWriteToFile
+func renameFile(g *GlobalContext, src string, dest string) error {
 	var err error
-
-	// See if any secret key files are in the new location. If so, don't repair.
-	if newSecretKeyfiles, _ := filepath.Glob(filepath.Join(currentHome, "*.ss")); len(newSecretKeyfiles) > 0 {
-		return false, nil
-	}
-
-	files, _ := filepath.Glob(filepath.Join(oldHome, "*.mpack"))
-	oldSecretKeyfiles, _ := filepath.Glob(filepath.Join(oldHome, "*.ss"))
-	files = append(files, oldSecretKeyfiles...)
-	var newFiles []string
-
-	for _, oldPathName := range files {
-		_, name := filepath.Split(oldPathName)
-		newPathName := filepath.Join(currentHome, name)
-
-		// If both copies exist, skip
-		if exists, _ := FileExists(newPathName); !exists {
-			g.Log.Error("RemoteSettingsRepairman copying %s to %s", oldPathName, newPathName)
-			err = copyFile(oldPathName, newPathName)
-			if err != nil {
-				g.Log.Error("RemoteSettingsRepairman fatal error copying %s to %s - %s", oldPathName, newPathName, err)
-				break
-			} else {
-				newFiles = append(newFiles, newPathName)
-			}
-		}
-
-	}
-	if err != nil {
-		// Undo any of the new copies and quit
-		for _, newPathName := range newFiles {
-			os.Remove(newPathName)
-		}
-		return false, err
-	}
-	// Now that we've successfully copied, delete the old ones - BUT don't bail out on error here
-	for _, oldPathName := range files {
-		os.Remove(oldPathName)
-	}
-
-	// Return true if we copied any
-	if len(files) > 0 {
-		return true, err
-	}
-
-	return false, err
-}
-
-// helper for RemoteSettingsRepairman
-func moveNonChromiumFiles(g *GlobalContext, oldHome string, currentHome string) error {
-
-	files, _ := filepath.Glob(filepath.Join(oldHome, "*"))
-	for _, oldPathName := range files {
-		_, name := filepath.Split(oldPathName)
-		// Chromium seems stubborn about these - TBD
-		switch name {
-		case "GPUCache":
-			continue
-		case "lockfile":
-			continue
-		case "app-state.json":
-			continue
-		case "Cache":
-			continue
-		case "Cookies":
-			continue
-		case "Cookies-journal":
-			continue
-		case "Local Storage":
-			continue
-		}
-		// explicitly skip logs
-		if strings.HasSuffix(name, ".log") {
-			continue
-		}
-		newPathName := filepath.Join(currentHome, name)
-		var err error
-		g.Log.Info("   moving %s", name)
-
-		for i := 0; i < 5; i++ {
-			if err != nil {
-				time.Sleep(100 * time.Millisecond)
-			}
-			err = os.Rename(oldPathName, newPathName)
-			if err == nil {
-				break
-			}
-		}
+	for i := 0; i < 5; i++ {
 		if err != nil {
-			g.Log.Error("RemoteSettingsRepairman error moving %s to %s (continuing) - %s", oldPathName, newPathName, err)
+			g.Log.Debug("Retrying failed os.Rename - %s", err)
+			time.Sleep(10 * time.Millisecond)
+		}
+		err = os.Rename(src, dest)
+		if err == nil {
+			break
 		}
 	}
-	return nil
-}
-
-// RemoteSettingsRepairman does a one-time move of everyting from the roaming
-// target directory to local. We depend on the .exe files having been uninstalled from
-// there first.
-// Note that Chromium still insists on keeping some stuff in roaming,
-// exceptions for which are hardcoded.
-func RemoteSettingsRepairman(g *GlobalContext) error {
-	w := Win32{Base{"keybase",
-		func() string { return g.Env.getHomeFromCmdOrConfig() },
-		func() RunMode { return g.Env.GetRunMode() }}}
-
-	currentHome := w.Home(false)
-	kbDir := filepath.Base(currentHome)
-	oldDir, err := AppDataDir()
-	if err != nil {
-		return err
-	}
-	oldHome := filepath.Join(oldDir, kbDir)
-
-	// Only continue repairing if key files needed to be moved
-	if moved, err := moveKeyFiles(g, oldHome, currentHome); !moved || err != nil {
-		return err
-	}
-	// Don't fail the repairmain if these others can't be moved
-	moveNonChromiumFiles(g, oldHome, currentHome)
-	return nil
+	return err
 }
 
 // Notify the shell that the thing located at path has changed
 func notifyShell(path string) {
-	shChangeNotifyProc.Call(
-		uintptr(0x00002000), // SHCNE_UPDATEITEM
-		uintptr(0x0005),     // SHCNF_PATHW
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(path))),
-		0)
+	pathEncoded := utf16.Encode([]rune(path))
+	if len(pathEncoded) > 0 {
+		shChangeNotifyProc.Call(
+			uintptr(0x00002000), // SHCNE_UPDATEITEM
+			uintptr(0x0005),     // SHCNF_PATHW
+			uintptr(unsafe.Pointer(&pathEncoded[0])),
+			0)
+	}
 }
 
 // Manipulate registry entries to reflect the mount point icon in the shell
@@ -288,7 +189,7 @@ func ChangeMountIcon(oldMount string, newMount string) error {
 	if err != nil {
 		return err
 	}
-	keybaseExe, err := osext.Executable()
+	keybaseExe, err := utils.BinPath()
 	if err != nil {
 		return err
 	}

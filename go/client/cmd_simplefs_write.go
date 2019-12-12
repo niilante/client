@@ -36,6 +36,7 @@ func NewCmdSimpleFSWrite(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli
 		Usage:        "write input to file",
 		Action: func(c *cli.Context) {
 			cl.ChooseCommand(&CmdSimpleFSWrite{Contextified: libkb.NewContextified(g)}, "write", c)
+			cl.SetNoStandalone()
 		},
 		Flags: []cli.Flag{
 			cli.BoolFlag{
@@ -68,7 +69,7 @@ func (c *CmdSimpleFSWrite) Run() error {
 
 	// if we're appending, we'll need the size
 	if c.flags&keybase1.OpenFlags_APPEND != 0 {
-		e, err := cli.SimpleFSStat(context.TODO(), c.path)
+		e, err := cli.SimpleFSStat(context.TODO(), keybase1.SimpleFSStatArg{Path: c.path})
 		if err != nil {
 			return err
 		}
@@ -89,13 +90,13 @@ func (c *CmdSimpleFSWrite) Run() error {
 	r := bufio.NewReader(os.Stdin)
 
 	for {
-		n, err := r.Read(buf[:cap(buf)])
+		n, bufErr := r.Read(buf[:cap(buf)])
 		buf = buf[:n]
 		if n == 0 {
-			if err == nil {
+			if bufErr == nil {
 				continue
 			}
-			if err == io.EOF {
+			if bufErr == io.EOF {
 				break
 			}
 		}
@@ -103,7 +104,7 @@ func (c *CmdSimpleFSWrite) Run() error {
 		err2 := cli.SimpleFSWrite(context.TODO(), keybase1.SimpleFSWriteArg{
 			OpID:    opid,
 			Offset:  c.offset,
-			Content: buf[:],
+			Content: buf,
 		})
 		if err2 != nil {
 			err = err2
@@ -111,9 +112,11 @@ func (c *CmdSimpleFSWrite) Run() error {
 		}
 		c.offset += int64(n)
 
-		if err != nil {
-			if err == io.EOF {
+		if bufErr != nil {
+			if bufErr == io.EOF {
 				err = nil
+			} else {
+				err = bufErr
 			}
 			break
 		}
@@ -135,12 +138,16 @@ func (c *CmdSimpleFSWrite) ParseArgv(ctx *cli.Context) error {
 		c.flags = keybase1.OpenFlags_WRITE | keybase1.OpenFlags_REPLACE
 	}
 
-	if nargs == 1 {
-		c.path = makeSimpleFSPath(c.G(), ctx.Args()[0])
-	} else {
-		err = fmt.Errorf("write requires a path argument")
+	if nargs != 1 {
+		return fmt.Errorf("write requires a path argument")
 	}
 
+	p, err := makeSimpleFSPath(ctx.Args()[0])
+	if err != nil {
+		return err
+	}
+
+	c.path = p
 	return err
 }
 

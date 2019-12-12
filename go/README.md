@@ -26,7 +26,7 @@ instructions](https://keybase.io/download).
 ### Building
 
 Here's how to build the command line client on Linux or OSX. You need to
-have both Git and **Go 1.7 or higher** installed. (Run `go version` to
+have both Git and **Go 1.9 or higher** installed. (Run `go version` to
 see what version you have.)
 
 ```bash
@@ -79,6 +79,12 @@ keybase --standalone id max
 ```bash
 cd $GOPATH/src/github.com/keybase/client/go/test
 ./run_tests.sh
+```
+
+### Calculate package dependenies
+
+```bash
+make gen-deps
 ```
 
 ### License

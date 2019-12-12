@@ -9,24 +9,6 @@
   "types": [
     {
       "type": "record",
-      "name": "Tracker",
-      "fields": [
-        {
-          "type": "UID",
-          "name": "tracker"
-        },
-        {
-          "type": "int",
-          "name": "status"
-        },
-        {
-          "type": "Time",
-          "name": "mTime"
-        }
-      ]
-    },
-    {
-      "type": "record",
       "name": "TrackProof",
       "fields": [
         {
@@ -131,15 +113,33 @@
     },
     {
       "type": "record",
+      "name": "EmailAddress",
+      "fields": [],
+      "typedef": "string"
+    },
+    {
+      "type": "record",
       "name": "Email",
       "fields": [
         {
-          "type": "string",
+          "type": "EmailAddress",
           "name": "email"
         },
         {
           "type": "boolean",
           "name": "isVerified"
+        },
+        {
+          "type": "boolean",
+          "name": "isPrimary"
+        },
+        {
+          "type": "IdentityVisibility",
+          "name": "visibility"
+        },
+        {
+          "type": "UnixTime",
+          "name": "lastVerifyEmailDate"
         }
       ]
     },
@@ -153,49 +153,13 @@
             "items": "Email"
           },
           "name": "emails"
-        }
-      ]
-    },
-    {
-      "type": "record",
-      "name": "SearchComponent",
-      "fields": [
-        {
-          "type": "string",
-          "name": "key"
-        },
-        {
-          "type": "string",
-          "name": "value"
-        },
-        {
-          "type": "double",
-          "name": "score"
-        }
-      ]
-    },
-    {
-      "type": "record",
-      "name": "SearchResult",
-      "fields": [
-        {
-          "type": "UID",
-          "name": "uid"
-        },
-        {
-          "type": "string",
-          "name": "username"
         },
         {
           "type": {
             "type": "array",
-            "items": "SearchComponent"
+            "items": "UserPhoneNumber"
           },
-          "name": "components"
-        },
-        {
-          "type": "double",
-          "name": "score"
+          "name": "phoneNumbers"
         }
       ]
     },
@@ -249,53 +213,329 @@
           "name": "version"
         }
       ]
+    },
+    {
+      "type": "record",
+      "name": "InterestingPerson",
+      "fields": [
+        {
+          "type": "UID",
+          "name": "uid"
+        },
+        {
+          "type": "string",
+          "name": "username"
+        },
+        {
+          "type": "string",
+          "name": "fullname"
+        },
+        {
+          "type": {
+            "type": "map",
+            "values": "string",
+            "keys": "string"
+          },
+          "name": "serviceMap"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ProofSuggestionsRes",
+      "fields": [
+        {
+          "type": {
+            "type": "array",
+            "items": "ProofSuggestion"
+          },
+          "name": "suggestions"
+        },
+        {
+          "type": "boolean",
+          "name": "showMore"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ProofSuggestion",
+      "fields": [
+        {
+          "type": "string",
+          "name": "key"
+        },
+        {
+          "type": "boolean",
+          "name": "belowFold"
+        },
+        {
+          "type": "string",
+          "name": "profileText"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "SizedImage"
+          },
+          "name": "profileIcon"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "SizedImage"
+          },
+          "name": "profileIconWhite"
+        },
+        {
+          "type": "string",
+          "name": "pickerText"
+        },
+        {
+          "type": "string",
+          "name": "pickerSubtext"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "SizedImage"
+          },
+          "name": "pickerIcon"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "Identify3RowMeta"
+          },
+          "name": "metas"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "NextMerkleRootRes",
+      "fields": [
+        {
+          "type": [
+            null,
+            "MerkleRootV2"
+          ],
+          "name": "res"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "PassphraseState",
+      "symbols": [
+        "KNOWN_0",
+        "RANDOM_1"
+      ],
+      "doc": "PassphraseState values are used in .config.json, so should not be changed without a migration strategy"
+    },
+    {
+      "type": "record",
+      "name": "CanLogoutRes",
+      "fields": [
+        {
+          "type": "boolean",
+          "name": "canLogout"
+        },
+        {
+          "type": "string",
+          "name": "reason"
+        },
+        {
+          "type": "PassphraseState",
+          "name": "passphraseState"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserPassphraseStateMsg",
+      "fields": [
+        {
+          "type": "PassphraseState",
+          "name": "passphraseState",
+          "jsonkey": "state"
+        }
+      ],
+      "lint": "ignore"
+    },
+    {
+      "type": "record",
+      "name": "UserBlockedRow",
+      "fields": [
+        {
+          "type": "UID",
+          "name": "uid",
+          "jsonkey": "block_uid"
+        },
+        {
+          "type": "string",
+          "name": "username",
+          "jsonkey": "block_username"
+        },
+        {
+          "type": [
+            null,
+            "boolean"
+          ],
+          "name": "chat",
+          "jsonkey": "chat"
+        },
+        {
+          "type": [
+            null,
+            "boolean"
+          ],
+          "name": "follow",
+          "jsonkey": "follow"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "UserBlockType",
+      "symbols": [
+        "CHAT_0",
+        "FOLLOW_1"
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserBlockedBody",
+      "fields": [
+        {
+          "type": {
+            "type": "array",
+            "items": "UserBlockedRow"
+          },
+          "name": "blocks",
+          "jsonkey": "blocks"
+        },
+        {
+          "type": "UID",
+          "name": "uid",
+          "jsonkey": "blocker_uid"
+        },
+        {
+          "type": "string",
+          "name": "username",
+          "jsonkey": "blocker_username"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserBlockState",
+      "fields": [
+        {
+          "type": "UserBlockType",
+          "name": "blockType"
+        },
+        {
+          "type": "boolean",
+          "name": "blocked"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserBlockedSummary",
+      "fields": [
+        {
+          "type": "string",
+          "name": "blocker"
+        },
+        {
+          "type": {
+            "type": "map",
+            "values": {
+              "type": "array",
+              "items": "UserBlockState"
+            },
+            "keys": "string"
+          },
+          "name": "blocks"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserBlock",
+      "fields": [
+        {
+          "type": "string",
+          "name": "username"
+        },
+        {
+          "type": "boolean",
+          "name": "chatBlocked"
+        },
+        {
+          "type": "boolean",
+          "name": "followBlocked"
+        },
+        {
+          "type": [
+            null,
+            "Time"
+          ],
+          "name": "createTime"
+        },
+        {
+          "type": [
+            null,
+            "Time"
+          ],
+          "name": "modifyTime"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "UserBlockArg",
+      "fields": [
+        {
+          "type": "string",
+          "name": "username"
+        },
+        {
+          "type": [
+            null,
+            "boolean"
+          ],
+          "name": "setChatBlock"
+        },
+        {
+          "type": [
+            null,
+            "boolean"
+          ],
+          "name": "setFollowBlock"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "TeamBlock",
+      "fields": [
+        {
+          "type": "string",
+          "name": "teamName",
+          "jsonkey": "fq_name"
+        },
+        {
+          "type": "Time",
+          "name": "createTime",
+          "jsonkey": "ctime"
+        }
+      ]
     }
   ],
   "messages": {
-    "listTrackers": {
-      "request": [
-        {
-          "name": "sessionID",
-          "type": "int"
-        },
-        {
-          "name": "uid",
-          "type": "UID"
-        }
-      ],
-      "response": {
-        "type": "array",
-        "items": "Tracker"
-      }
-    },
-    "listTrackersByName": {
-      "request": [
-        {
-          "name": "sessionID",
-          "type": "int"
-        },
-        {
-          "name": "username",
-          "type": "string"
-        }
-      ],
-      "response": {
-        "type": "array",
-        "items": "Tracker"
-      }
-    },
-    "listTrackersSelf": {
-      "request": [
-        {
-          "name": "sessionID",
-          "type": "int"
-        }
-      ],
-      "response": {
-        "type": "array",
-        "items": "Tracker"
-      }
-    },
     "loadUncheckedUserSummaries": {
       "request": [
         {
@@ -360,6 +600,27 @@
       ],
       "response": "UserPlusKeys",
       "doc": "Load a user + device keys from the server."
+    },
+    "loadUserPlusKeysV2": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "uid",
+          "type": "UID"
+        },
+        {
+          "name": "pollForKID",
+          "type": "KID"
+        },
+        {
+          "name": "oa",
+          "type": "OfflineAvailability"
+        }
+      ],
+      "response": "UserPlusKeysV2AllIncarnations"
     },
     "loadPublicKeys": {
       "request": [
@@ -443,23 +704,6 @@
       ],
       "response": "string"
     },
-    "search": {
-      "request": [
-        {
-          "name": "sessionID",
-          "type": "int"
-        },
-        {
-          "name": "query",
-          "type": "string"
-        }
-      ],
-      "response": {
-        "type": "array",
-        "items": "SearchResult"
-      },
-      "doc": "Search for users who match a given query."
-    },
     "loadAllPublicKeysUnverified": {
       "request": [
         {
@@ -514,6 +758,262 @@
         }
       ],
       "response": null
+    },
+    "interestingPeople": {
+      "request": [
+        {
+          "name": "maxUsers",
+          "type": "int"
+        }
+      ],
+      "response": {
+        "type": "array",
+        "items": "InterestingPerson"
+      }
+    },
+    "meUserVersion": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "forcePoll",
+          "type": "boolean"
+        }
+      ],
+      "response": "UserVersion"
+    },
+    "getUPAK": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "UID"
+        }
+      ],
+      "response": "UPAKVersioned",
+      "doc": "getUPAK returns a UPAK. Used mainly for debugging.",
+      "lint": "ignore"
+    },
+    "getUPAKLite": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "UID"
+        }
+      ],
+      "response": "UPKLiteV1AllIncarnations",
+      "doc": "getUPAKLite returns a UPKLiteV1AllIncarnations. Used mainly for debugging.",
+      "lint": "ignore"
+    },
+    "uploadUserAvatar": {
+      "request": [
+        {
+          "name": "filename",
+          "type": "string"
+        },
+        {
+          "name": "crop",
+          "type": [
+            null,
+            "ImageCropRect"
+          ]
+        }
+      ],
+      "response": null
+    },
+    "proofSuggestions": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        }
+      ],
+      "response": "ProofSuggestionsRes"
+    },
+    "findNextMerkleRootAfterRevoke": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "UID"
+        },
+        {
+          "name": "kid",
+          "type": "KID"
+        },
+        {
+          "name": "loc",
+          "type": "SigChainLocation"
+        },
+        {
+          "name": "prev",
+          "type": "MerkleRootV2"
+        }
+      ],
+      "response": "NextMerkleRootRes",
+      "doc": "FindNextMerkleRootAfterRevoke finds the first Merkle Root that contains the UID/KID\n   revocation at the given SigChainLocataion. The MerkleRootV2 prev is a hint as to where\n   we'll start our search. Usually it's the next one, but not always"
+    },
+    "findNextMerkleRootAfterReset": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "UID"
+        },
+        {
+          "name": "resetSeqno",
+          "type": "Seqno"
+        },
+        {
+          "name": "prev",
+          "type": "ResetMerkleRoot"
+        }
+      ],
+      "response": "NextMerkleRootRes",
+      "doc": "FindNextMerkleRootAfterReset finds the first Merkle root that contains the UID reset\n   at resetSeqno. You should pass it prev, which was the last known Merkle root at the time of\n   the reset. Usually, we'll just turn up the next Merkle root, but not always."
+    },
+    "canLogout": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        }
+      ],
+      "response": "CanLogoutRes"
+    },
+    "loadPassphraseState": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        }
+      ],
+      "response": "PassphraseState"
+    },
+    "userCard": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "useSession",
+          "type": "boolean"
+        }
+      ],
+      "response": [
+        null,
+        "UserCard"
+      ]
+    },
+    "setUserBlocks": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "blocks",
+          "type": {
+            "type": "array",
+            "items": "UserBlockArg"
+          }
+        }
+      ],
+      "response": null
+    },
+    "getUserBlocks": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "usernames",
+          "type": {
+            "type": "array",
+            "items": "string"
+          }
+        }
+      ],
+      "response": {
+        "type": "array",
+        "items": "UserBlock"
+      }
+    },
+    "reportUser": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "reason",
+          "type": "string"
+        },
+        {
+          "name": "comment",
+          "type": "string"
+        },
+        {
+          "name": "includeTranscript",
+          "type": "boolean"
+        },
+        {
+          "name": "convID",
+          "type": [
+            null,
+            "string"
+          ]
+        }
+      ],
+      "response": null
+    },
+    "dismissBlockButtons": {
+      "request": [
+        {
+          "name": "tlfID",
+          "type": "TLFID"
+        }
+      ],
+      "response": null
+    },
+    "blockUser": {
+      "request": [
+        {
+          "name": "username",
+          "type": "string"
+        }
+      ],
+      "response": null
+    },
+    "unblockUser": {
+      "request": [
+        {
+          "name": "username",
+          "type": "string"
+        }
+      ],
+      "response": null
+    },
+    "getTeamBlocks": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        }
+      ],
+      "response": {
+        "type": "array",
+        "items": "TeamBlock"
+      }
     }
   },
   "namespace": "keybase.1"

@@ -17,7 +17,6 @@ import (
 // CmdSimpleFSPs is the 'fs ps' command.
 type CmdSimpleFSPs struct {
 	libkb.Contextified
-	path    keybase1.Path
 	recurse bool
 }
 
@@ -28,6 +27,7 @@ func NewCmdSimpleFSPs(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Co
 		Usage: "list running operations",
 		Action: func(c *cli.Context) {
 			cl.ChooseCommand(&CmdSimpleFSPs{Contextified: libkb.NewContextified(g)}, "ps", c)
+			cl.SetNoStandalone()
 		},
 	}
 }
@@ -52,7 +52,7 @@ func getPathString(path keybase1.Path) string {
 		return ""
 	}
 	if pathType == keybase1.PathType_KBFS {
-		return path.Kbfs()
+		return path.Kbfs().Path
 	}
 	return path.Local()
 }

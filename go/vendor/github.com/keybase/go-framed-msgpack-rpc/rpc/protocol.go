@@ -1,26 +1,78 @@
 package rpc
 
 import (
+	"fmt"
 	"sync"
 
 	"golang.org/x/net/context"
 )
 
 type ServeHandlerDescription struct {
-	MakeArg    func() interface{}
-	Handler    func(ctx context.Context, arg interface{}) (ret interface{}, err error)
-	MethodType MethodType
+	MakeArg func() interface{}
+	Handler func(ctx context.Context, arg interface{}) (ret interface{}, err error)
 }
 
 type MethodType int
 
 const (
-	MethodInvalid  MethodType = -1
-	MethodCall     MethodType = 0
-	MethodResponse MethodType = 1
-	MethodNotify   MethodType = 2
-	MethodCancel   MethodType = 3
+	MethodInvalid        MethodType = -1
+	MethodCall           MethodType = 0
+	MethodResponse       MethodType = 1
+	MethodNotify         MethodType = 2
+	MethodCancel         MethodType = 3
+	MethodCallCompressed MethodType = 4
 )
+
+func (t MethodType) String() string {
+	switch t {
+	case MethodInvalid:
+		return "Invalid"
+	case MethodCall:
+		return "Call"
+	case MethodResponse:
+		return "Response"
+	case MethodNotify:
+		return "Notify"
+	case MethodCancel:
+		return "Cancel"
+	case MethodCallCompressed:
+		return "CallCompressed"
+	default:
+		return fmt.Sprintf("Method(%d)", t)
+	}
+}
+
+type CompressionType int
+
+const (
+	CompressionNone       CompressionType = 0
+	CompressionGzip       CompressionType = 1
+	CompressionMsgpackzip CompressionType = 2
+)
+
+func (t CompressionType) String() string {
+	switch t {
+	case CompressionNone:
+		return "none"
+	case CompressionGzip:
+		return "gzip"
+	case CompressionMsgpackzip:
+		return "msgpackzip"
+	default:
+		return fmt.Sprintf("Compression(%d)", t)
+	}
+}
+
+func (t CompressionType) NewCompressor() compressor {
+	switch t {
+	case CompressionGzip:
+		return newGzipCompressor()
+	case CompressionMsgpackzip:
+		return newMsgpackzipCompressor()
+	default:
+		return nil
+	}
+}
 
 type ErrorUnwrapper interface {
 	MakeArg() interface{}
@@ -35,7 +87,7 @@ type Protocol struct {
 
 type protocolMap map[string]Protocol
 
-type seqNumber int
+type SeqNumber int
 
 type protocolHandler struct {
 	wef       WrapErrorFunc

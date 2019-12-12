@@ -25,6 +25,18 @@
         },
         {
           "type": "boolean",
+          "name": "kbfsdesktop"
+        },
+        {
+          "type": "boolean",
+          "name": "kbfslegacy"
+        },
+        {
+          "type": "boolean",
+          "name": "kbfssubscription"
+        },
+        {
+          "type": "boolean",
           "name": "tracking"
         },
         {
@@ -66,6 +78,46 @@
         {
           "type": "boolean",
           "name": "reachability"
+        },
+        {
+          "type": "boolean",
+          "name": "team"
+        },
+        {
+          "type": "boolean",
+          "name": "ephemeral"
+        },
+        {
+          "type": "boolean",
+          "name": "teambot"
+        },
+        {
+          "type": "boolean",
+          "name": "chatkbfsedits"
+        },
+        {
+          "type": "boolean",
+          "name": "chatdev"
+        },
+        {
+          "type": "boolean",
+          "name": "deviceclone"
+        },
+        {
+          "type": "boolean",
+          "name": "chatattachments"
+        },
+        {
+          "type": "boolean",
+          "name": "wallet"
+        },
+        {
+          "type": "boolean",
+          "name": "audit"
+        },
+        {
+          "type": "boolean",
+          "name": "runtimestats"
         }
       ]
     }

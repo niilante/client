@@ -9,10 +9,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/keybase/client/go/gregor"
+	"github.com/keybase/client/go/kbcrypto"
 	"github.com/keybase/client/go/protocol/chat1"
+	"github.com/keybase/client/go/protocol/gregor1"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
 
@@ -74,6 +78,14 @@ func NewProofError(s keybase1.ProofStatus, d string, a ...interface{}) *ProofErr
 	return &ProofErrorImpl{s, fmt.Sprintf(d, a...)}
 }
 
+func NewInvalidPVLSelectorError(selector keybase1.SelectorEntry) error {
+	return NewProofError(
+		keybase1.ProofStatus_INVALID_PVL,
+		"JSON selector entry must be a string, int, or 'all' %v",
+		selector,
+	)
+}
+
 func (e *ProofErrorImpl) Error() string {
 	return fmt.Sprintf("%s (code=%d)", e.Desc, int(e.Status))
 }
@@ -116,7 +128,7 @@ func NewProofAPIError(s keybase1.ProofStatus, u string, d string, a ...interface
 
 func XapiError(err error, u string) *ProofAPIError {
 	if ae, ok := err.(*APIError); ok {
-		code := keybase1.ProofStatus_NONE
+		var code keybase1.ProofStatus
 		switch ae.Code / 100 {
 		case 3:
 			code = keybase1.ProofStatus_HTTP_300
@@ -144,7 +156,7 @@ type FailedAssertionError struct {
 }
 
 func (u FailedAssertionError) Error() string {
-	v := make([]string, len(u.bad), len(u.bad))
+	v := make([]string, len(u.bad))
 	for i, u := range u.bad {
 		v[i] = u.String()
 	}
@@ -164,6 +176,22 @@ func (e AssertionParseError) Error() string {
 
 func NewAssertionParseError(s string, a ...interface{}) AssertionParseError {
 	return AssertionParseError{
+		err: fmt.Sprintf(s, a...),
+	}
+}
+
+//=============================================================================
+
+type AssertionCheckError struct {
+	err string
+}
+
+func (e AssertionCheckError) Error() string {
+	return e.err
+}
+
+func NewAssertionCheckError(s string, a ...interface{}) AssertionCheckError {
+	return AssertionCheckError{
 		err: fmt.Sprintf(s, a...),
 	}
 }
@@ -192,6 +220,10 @@ type WrongKidError struct {
 
 func (w WrongKidError) Error() string {
 	return fmt.Sprintf("Wanted KID=%s; but got KID=%s", w.wanted, w.got)
+}
+
+func NewWrongKidError(w keybase1.KID, g keybase1.KID) WrongKidError {
+	return WrongKidError{w, g}
 }
 
 //=============================================================================
@@ -273,6 +305,15 @@ func (e NotFoundError) Error() string {
 	return e.Msg
 }
 
+func IsNotFoundError(err error) bool {
+	_, ok := err.(NotFoundError)
+	return ok
+}
+
+func NewNotFoundError(s string) error {
+	return NotFoundError{s}
+}
+
 //=============================================================================
 
 type MissingDelegationTypeError struct{}
@@ -294,19 +335,9 @@ func (u NoKeyError) Error() string {
 	return "No public key found"
 }
 
-type NoEldestKeyError struct {
-}
-
-func (e NoEldestKeyError) Error() string {
-	return "No Eldest key found"
-}
-
-type NoActiveKeyError struct {
-	Username string
-}
-
-func (e NoActiveKeyError) Error() string {
-	return fmt.Sprintf("user %s has no active keys", e.Username)
+func IsNoKeyError(err error) bool {
+	_, ok := err.(NoKeyError)
+	return ok
 }
 
 type NoSyncedPGPKeyError struct{}
@@ -345,12 +376,24 @@ func (e TooManyKeysError) Error() string {
 
 //=============================================================================
 
-type NoSelectedKeyError struct {
-	wanted *PGPFingerprint
-}
+type NoSelectedKeyError struct{}
 
 func (n NoSelectedKeyError) Error() string {
 	return "Please login again to verify your public key"
+}
+
+//=============================================================================
+
+type KeyCorruptedError struct {
+	Msg string
+}
+
+func (e KeyCorruptedError) Error() string {
+	msg := "Key corrupted"
+	if len(e.Msg) != 0 {
+		msg = msg + ": " + e.Msg
+	}
+	return msg
 }
 
 //=============================================================================
@@ -374,11 +417,30 @@ type PassphraseError struct {
 }
 
 func (p PassphraseError) Error() string {
-	msg := "Bad passphrase"
+	msg := "Bad password"
 	if len(p.Msg) != 0 {
 		msg = msg + ": " + p.Msg + "."
 	}
 	return msg
+}
+
+//=============================================================================
+
+type PaperKeyError struct {
+	msg      string
+	tryAgain bool
+}
+
+func (p PaperKeyError) Error() string {
+	msg := "Bad paper key: " + p.msg
+	if p.tryAgain {
+		msg += ". Please try again."
+	}
+	return msg
+}
+
+func NewPaperKeyError(s string, t bool) error {
+	return PaperKeyError{msg: s, tryAgain: t}
 }
 
 //=============================================================================
@@ -391,20 +453,6 @@ func (e BadEmailError) Error() string {
 	msg := "Bad email"
 	if len(e.Msg) != 0 {
 		msg = msg + ": " + e.Msg
-	}
-	return msg
-}
-
-//=============================================================================
-
-type BadKeyError struct {
-	Msg string
-}
-
-func (p BadKeyError) Error() string {
-	msg := "Bad key found"
-	if len(p.Msg) != 0 {
-		msg = msg + ": " + p.Msg
 	}
 	return msg
 }
@@ -426,6 +474,18 @@ type AppStatusError struct {
 	Name   string
 	Desc   string
 	Fields map[string]string
+}
+
+// If the error is an AppStatusError, returns its code.
+// Otherwise returns (SCGeneric, false).
+func GetAppStatusCode(err error) (code keybase1.StatusCode, ok bool) {
+	code = keybase1.StatusCode_SCGeneric
+	switch err := err.(type) {
+	case AppStatusError:
+		return keybase1.StatusCode(err.Code), true
+	default:
+		return code, false
+	}
 }
 
 func (a AppStatusError) IsBadField(s string) bool {
@@ -457,6 +517,39 @@ func (a AppStatusError) Error() string {
 	}
 
 	return fmt.Sprintf("%s%s (error %d)", a.Desc, fields, a.Code)
+}
+
+func (a AppStatusError) WithDesc(desc string) AppStatusError {
+	a.Desc = desc
+	return a
+}
+
+func IsAppStatusCode(err error, code keybase1.StatusCode) bool {
+	switch err := err.(type) {
+	case AppStatusError:
+		return err.Code == int(code)
+	default:
+		return false
+	}
+}
+
+func IsEphemeralRetryableError(err error) bool {
+	switch err := err.(type) {
+	case AppStatusError:
+		switch keybase1.StatusCode(err.Code) {
+		case keybase1.StatusCode_SCSigWrongKey,
+			keybase1.StatusCode_SCSigOldSeqno,
+			keybase1.StatusCode_SCEphemeralKeyBadGeneration,
+			keybase1.StatusCode_SCEphemeralKeyUnexpectedBox,
+			keybase1.StatusCode_SCEphemeralKeyMissingBox,
+			keybase1.StatusCode_SCEphemeralKeyWrongNumberOfKeys:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 //=============================================================================
@@ -506,6 +599,10 @@ func (e LoginRequiredError) Error() string {
 	return msg
 }
 
+func NewLoginRequiredError(s string) error {
+	return LoginRequiredError{s}
+}
+
 type ReloginRequiredError struct{}
 
 func (e ReloginRequiredError) Error() string {
@@ -549,7 +646,7 @@ type LoggedInWrongUserError struct {
 }
 
 func (e LoggedInWrongUserError) Error() string {
-	return fmt.Sprintf("Logged in as %q, attempting to log in as %q:  try logout first", e.ExistingName, e.AttemptedName)
+	return fmt.Sprintf("Logged in as %q, attempting to log in as %q: try logout first", e.ExistingName, e.AttemptedName)
 }
 
 //=============================================================================
@@ -627,6 +724,18 @@ func NewWebUnreachableError(h string) WebUnreachableError {
 
 //=============================================================================
 
+type ProtocolSchemeMismatch struct {
+	msg string
+}
+
+func (h ProtocolSchemeMismatch) Error() string {
+	return h.msg
+}
+func NewProtocolSchemeMismatch(msg string) ProtocolSchemeMismatch {
+	return ProtocolSchemeMismatch{msg: msg}
+}
+
+//=============================================================================
 type ProtocolDowngradeError struct {
 	msg string
 }
@@ -655,23 +764,23 @@ func NewProfileNotPublicError(s string) ProfileNotPublicError {
 //=============================================================================
 
 type BadUsernameError struct {
-	N string
+	N   string
+	msg string
 }
 
 func (e BadUsernameError) Error() string {
-	return "Bad username: '" + e.N + "'"
+	if len(e.msg) == 0 {
+		return "Bad username: '" + e.N + "'"
+	}
+	return e.msg
 }
 
 func NewBadUsernameError(n string) BadUsernameError {
 	return BadUsernameError{N: n}
 }
 
-//=============================================================================
-
-type BadNameError string
-
-func (e BadNameError) Error() string {
-	return fmt.Sprintf("Bad username or email: %s", string(e))
+func NewBadUsernameErrorWithFullMessage(msg string) BadUsernameError {
+	return BadUsernameError{msg: msg}
 }
 
 //=============================================================================
@@ -682,21 +791,7 @@ func (e NoUsernameError) Error() string {
 	return "No username known"
 }
 
-//=============================================================================
-
-type UnmarshalError struct {
-	T string
-}
-
-func (u UnmarshalError) Error() string {
-	return "Bad " + u.T + " packet"
-}
-
-type VerificationError struct{}
-
-func (v VerificationError) Error() string {
-	return "Verification failed"
-}
+func NewNoUsernameError() NoUsernameError { return NoUsernameError{} }
 
 //=============================================================================
 
@@ -739,29 +834,55 @@ func (k KeyUnimplementedError) Error() string {
 }
 
 type NoPGPEncryptionKeyError struct {
-	User         string
-	HasDeviceKey bool
+	User                    string
+	HasKeybaseEncryptionKey bool
 }
 
 func (e NoPGPEncryptionKeyError) Error() string {
 	var other string
-	if e.HasDeviceKey {
-		other = "; they do have a device key, so you can `keybase encrypt` to them instead"
+	if e.HasKeybaseEncryptionKey {
+		other = "; they do have a keybase key, so you can `keybase encrypt` to them instead"
 	}
 	return fmt.Sprintf("User %s doesn't have a PGP key%s", e.User, other)
 }
 
 type NoNaClEncryptionKeyError struct {
-	User      string
-	HasPGPKey bool
+	Username     string
+	HasPGPKey    bool
+	HasPUK       bool
+	HasDeviceKey bool
+	HasPaperKey  bool
 }
 
 func (e NoNaClEncryptionKeyError) Error() string {
 	var other string
-	if e.HasPGPKey {
-		other = "; they do have a PGP key, so you can `keybase pgp encrypt` to them instead"
+	switch {
+	case e.HasPUK:
+		other = "; they have a per user key, so you can encrypt without the `--no-entity-keys` flag to them instead"
+	case e.HasDeviceKey:
+		other = "; they do have a device key, so you can encrypt without the `--no-device-keys` flag to them instead"
+	case e.HasPaperKey:
+		other = "; they do have a paper key, so you can encrypt without the `--no-paper-keys` flag to them instead"
+	case e.HasPGPKey:
+		other = "; they do have a PGP key, so you can `keybase pgp encrypt` to encrypt for them instead"
 	}
-	return fmt.Sprintf("User %s doesn't have a device key%s", e.User, other)
+
+	return fmt.Sprintf("User %s doesn't have the necessary key type(s)%s", e.Username, other)
+}
+
+type KeyPseudonymError struct {
+	message string
+}
+
+func (e KeyPseudonymError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return "Bad Key Pseydonym or Nonce"
+}
+
+func NewKeyPseudonymError(message string) KeyPseudonymError {
+	return KeyPseudonymError{message: message}
 }
 
 //=============================================================================
@@ -790,17 +911,26 @@ func (d DecryptWrongReceiverError) Error() string {
 	return "Bad receiver key"
 }
 
-type DecryptOpenError struct{}
+type DecryptOpenError struct {
+	What string
+}
+
+func NewDecryptOpenError(what string) DecryptOpenError {
+	return DecryptOpenError{What: what}
+}
 
 func (d DecryptOpenError) Error() string {
-	return "box.Open failure; ciphertext was corrupted or wrong key"
+	if len(d.What) == 0 {
+		return "box.Open failure; ciphertext was corrupted or wrong key"
+	}
+	return fmt.Sprintf("failed to decrypt '%s'; ciphertext was corrupted or wrong key", d.What)
 }
 
 //=============================================================================
 
-type NoConfigFile struct{}
+type NoConfigFileError struct{}
 
-func (n NoConfigFile) Error() string {
+func (n NoConfigFileError) Error() string {
 	return "No configuration file available"
 }
 
@@ -846,6 +976,17 @@ type BadServiceError struct {
 
 func (e BadServiceError) Error() string {
 	return e.Service + ": unsupported service"
+}
+
+type ServiceDoesNotSupportNewProofsError struct {
+	Service string
+}
+
+func (e ServiceDoesNotSupportNewProofsError) Error() string {
+	if len(e.Service) == 0 {
+		return fmt.Sprintf("New proofs of that type are not supported")
+	}
+	return fmt.Sprintf("New %s proofs are not supported", e.Service)
 }
 
 //=============================================================================
@@ -947,10 +1088,18 @@ func (u UIDMismatchError) Error() string {
 	return fmt.Sprintf("UID mismatch error: %s", u.Msg)
 }
 
+func NewUIDMismatchError(m string) UIDMismatchError {
+	return UIDMismatchError{Msg: m}
+}
+
 //=============================================================================
 
 type KeyRevokedError struct {
 	msg string
+}
+
+func NewKeyRevokedError(m string) KeyRevokedError {
+	return KeyRevokedError{m}
 }
 
 func (r KeyRevokedError) Error() string {
@@ -970,7 +1119,7 @@ func (r KeyExpiredError) Error() string {
 //=============================================================================
 
 type UnknownKeyTypeError struct {
-	typ AlgoType
+	typ kbcrypto.AlgoType
 }
 
 func (e UnknownKeyTypeError) Error() string {
@@ -993,6 +1142,14 @@ type ChainLinkError struct {
 
 func (c ChainLinkError) Error() string {
 	return fmt.Sprintf("Error in parsing chain Link: %s", c.msg)
+}
+
+type ChainLinkStubbedUnsupportedError struct {
+	msg string
+}
+
+func (c ChainLinkStubbedUnsupportedError) Error() string {
+	return c.msg
 }
 
 type SigchainV2Error struct {
@@ -1029,6 +1186,18 @@ func (s SigchainV2MismatchedHashError) Error() string {
 	return "Sigchain V2 hash mismatch error"
 }
 
+type SigchainV2StubbedDisallowed struct{}
+
+func (s SigchainV2StubbedDisallowed) Error() string {
+	return "Link was stubbed but required"
+}
+
+type SigchainV2Required struct{}
+
+func (s SigchainV2Required) Error() string {
+	return "Link must use sig v2"
+}
+
 //=============================================================================
 
 type ReverseSigError struct {
@@ -1037,6 +1206,10 @@ type ReverseSigError struct {
 
 func (r ReverseSigError) Error() string {
 	return fmt.Sprintf("Error in reverse signature: %s", r.msg)
+}
+
+func NewReverseSigError(msgf string, a ...interface{}) ReverseSigError {
+	return ReverseSigError{msg: fmt.Sprintf(msgf, a...)}
 }
 
 //=============================================================================
@@ -1078,11 +1251,25 @@ const (
 	merkleErrorNoLegacyUIDRoot
 	merkleErrorUIDMismatch
 	merkleErrorNoSkipSequence
-	merkleErrorSkipSequence
 	merkleErrorSkipMissing
 	merkleErrorSkipHashMismatch
-	merkleErrorNoLeftBookend
-	merkleErrorNoRightBookend
+	merkleErrorHashMeta
+	merkleErrorBadResetChain
+	merkleErrorNotFound
+	merkleErrorBadSeqno
+	merkleErrorBadLeaf
+	merkleErrorNoUpdates
+	merkleErrorBadSigID
+	merkleErrorAncientSeqno
+	merkleErrorKBFSBadTree
+	merkleErrorKBFSMismatch
+	merkleErrorBadRoot
+	merkleErrorOldTree
+	merkleErrorOutOfOrderCtime
+	merkleErrorWrongSkipSequence
+	merkleErrorWrongRootSkips
+	merkleErrorFailedCheckpoint
+	merkleErrorTooMuchClockDrift
 )
 
 type MerkleClientError struct {
@@ -1090,16 +1277,49 @@ type MerkleClientError struct {
 	t merkleClientErrorType
 }
 
+func NewClientMerkleSkipHashMismatchError(m string) MerkleClientError {
+	return MerkleClientError{
+		t: merkleErrorSkipHashMismatch,
+		m: m,
+	}
+}
+
+func NewClientMerkleSkipMissingError(m string) MerkleClientError {
+	return MerkleClientError{
+		t: merkleErrorSkipMissing,
+		m: m,
+	}
+}
+
+func NewClientMerkleFailedCheckpointError(m string) MerkleClientError {
+	return MerkleClientError{
+		t: merkleErrorFailedCheckpoint,
+		m: m,
+	}
+}
+
 func (m MerkleClientError) Error() string {
 	return fmt.Sprintf("Error checking merkle tree: %s", m.m)
 }
 
-type MerkleNotFoundError struct {
+func (m MerkleClientError) IsNotFound() bool {
+	return m.t == merkleErrorNotFound
+}
+
+func (m MerkleClientError) IsOldTree() bool {
+	return m.t == merkleErrorOldTree
+}
+
+func (m MerkleClientError) IsSkipHashMismatch() bool {
+	return m.t == merkleErrorSkipHashMismatch
+}
+
+type MerklePathNotFoundError struct {
 	k   string
 	msg string
 }
 
-func (m MerkleNotFoundError) Error() string {
+func (m MerklePathNotFoundError) Error() string {
 	return fmt.Sprintf("For key '%s', Merkle path not found: %s", m.k, m.msg)
 }
 
@@ -1109,20 +1329,6 @@ type MerkleClashError struct {
 
 func (m MerkleClashError) Error() string {
 	return fmt.Sprintf("Merkle tree clashed with server reply: %s", m.c)
-}
-
-//=============================================================================
-
-type PvlSourceError struct {
-	msg string
-}
-
-func (e PvlSourceError) Error() string {
-	return fmt.Sprintf("PvlSource: %s", e.msg)
-}
-
-func NewPvlSourceError(msgf string, a ...interface{}) PvlSourceError {
-	return PvlSourceError{msg: fmt.Sprintf(msgf, a...)}
 }
 
 //=============================================================================
@@ -1155,6 +1361,10 @@ func (e SkipSecretPromptError) Error() string {
 
 type NoDeviceError struct {
 	Reason string
+}
+
+func NewNoDeviceError(s string) NoDeviceError {
+	return NoDeviceError{s}
 }
 
 func (e NoDeviceError) Error() string {
@@ -1220,11 +1430,11 @@ func NewUntrackError(d string, a ...interface{}) UntrackError {
 //=============================================================================
 
 type APINetError struct {
-	err error
+	Err error
 }
 
 func (e APINetError) Error() string {
-	return fmt.Sprintf("API network error: %s", e.err)
+	return fmt.Sprintf("API network error: %s", e.Err)
 }
 
 //=============================================================================
@@ -1239,10 +1449,15 @@ func (e NoDecryptionKeyError) Error() string {
 
 //=============================================================================
 
-type DecryptionError struct{}
+type DecryptionError struct {
+	Cause error
+}
 
 func (e DecryptionError) Error() string {
-	return "Decryption error"
+	if e.Cause == nil {
+		return "Decryption error"
+	}
+	return fmt.Sprintf("Decryption error: %v", e.Cause)
 }
 
 //=============================================================================
@@ -1263,6 +1478,30 @@ type ChainLinkWrongSeqnoError struct {
 
 func (e ChainLinkWrongSeqnoError) Error() string {
 	return fmt.Sprintf("Chain link wrong seqno error: %s", e.Msg)
+}
+
+func NewChainLinkWrongSeqnoError(s string) error {
+	return ChainLinkWrongSeqnoError{s}
+}
+
+//=============================================================================
+
+type ChainLinkHighSkipHashMismatchError struct {
+	Msg string
+}
+
+func (e ChainLinkHighSkipHashMismatchError) Error() string {
+	return fmt.Sprintf("Chain link HighSkipHash mismatch error: %s", e.Msg)
+}
+
+//=============================================================================
+
+type ChainLinkWrongHighSkipSeqnoError struct {
+	Msg string
+}
+
+func (e ChainLinkWrongHighSkipSeqnoError) Error() string {
+	return fmt.Sprintf("Chain link wrong HighSkipSeqno error: %s", e.Msg)
 }
 
 //=============================================================================
@@ -1340,9 +1579,34 @@ func (e IdentifyFailedError) Error() string {
 
 //=============================================================================
 
+type IdentifiesFailedError struct {
+}
+
+func (e IdentifiesFailedError) Error() string {
+	return fmt.Sprintf("one or more identifies failed")
+}
+
+func NewIdentifiesFailedError() IdentifiesFailedError {
+	return IdentifiesFailedError{}
+}
+
+//=============================================================================
+
 type IdentifySummaryError struct {
 	username NormalizedUsername
 	problems []string
+}
+
+func NewIdentifySummaryError(failure keybase1.TLFIdentifyFailure) IdentifySummaryError {
+	problem := "a followed proof failed"
+	if failure.Breaks != nil {
+		num := len(failure.Breaks.Proofs)
+		problem = fmt.Sprintf("%d followed proof%s failed", num, GiveMeAnS(num))
+	}
+	return IdentifySummaryError{
+		username: NewNormalizedUsername(failure.User.Username),
+		problems: []string{problem},
+	}
 }
 
 func (e IdentifySummaryError) Error() string {
@@ -1353,6 +1617,19 @@ func (e IdentifySummaryError) Error() string {
 
 func (e IdentifySummaryError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
 	return chat1.OutboxErrorType_IDENTIFY, true
+}
+
+func (e IdentifySummaryError) Problems() []string {
+	return e.problems
+}
+
+func IsIdentifyProofError(err error) bool {
+	switch err.(type) {
+	case ProofError, IdentifySummaryError:
+		return true
+	default:
+		return false
+	}
 }
 
 //=============================================================================
@@ -1401,6 +1678,12 @@ type PassphraseProvisionImpossibleError struct{}
 
 func (e PassphraseProvisionImpossibleError) Error() string {
 	return "Passphrase provision is not possible since you have at least one provisioned device or pgp key already"
+}
+
+type ProvisionViaDeviceRequiredError struct{}
+
+func (e ProvisionViaDeviceRequiredError) Error() string {
+	return "You must select an existing device to provision a new device"
 }
 
 type ProvisionUnavailableError struct{}
@@ -1457,13 +1740,38 @@ func (e UnmetAssertionError) Error() string {
 
 //=============================================================================
 
+type ResolutionErrorKind int
+
+const (
+	ResolutionErrorGeneral ResolutionErrorKind = iota
+	ResolutionErrorNotFound
+	ResolutionErrorAmbiguous
+	ResolutionErrorRateLimited
+	ResolutionErrorInvalidInput
+	ResolutionErrorRequestFailed
+)
+
 type ResolutionError struct {
 	Input string
 	Msg   string
+	Kind  ResolutionErrorKind
 }
 
 func (e ResolutionError) Error() string {
 	return fmt.Sprintf("In resolving '%s': %s", e.Input, e.Msg)
+}
+
+func IsResolutionError(err error) bool {
+	_, ok := err.(ResolutionError)
+	return ok
+}
+
+func IsResolutionNotFoundError(err error) bool {
+	rerr, ok := err.(ResolutionError)
+	if !ok {
+		return false
+	}
+	return rerr.Kind == ResolutionErrorNotFound
 }
 
 //=============================================================================
@@ -1603,27 +1911,13 @@ func IsExecError(err error) bool {
 
 //=============================================================================
 
-type BadSignaturePrefixError struct{}
-
-func (e BadSignaturePrefixError) Error() string { return "bad signature prefix" }
-
-//=============================================================================
-
-type UnhandledSignatureError struct {
-	version int
-}
-
-func (e UnhandledSignatureError) Error() string {
-	return fmt.Sprintf("unhandled signature version: %d", e.version)
-}
-
-type DeletedError struct {
+type UserDeletedError struct {
 	Msg string
 }
 
-func (e DeletedError) Error() string {
+func (e UserDeletedError) Error() string {
 	if len(e.Msg) == 0 {
-		return "Deleted"
+		return "User deleted"
 	}
 	return e.Msg
 }
@@ -1704,11 +1998,31 @@ func (e ChatUnknownTLFIDError) Error() string {
 //=============================================================================
 
 type ChatNotInConvError struct {
-	UID gregor.UID
+	UID    gregor.UID
+	ConvID chat1.ConversationID
 }
 
 func (e ChatNotInConvError) Error() string {
-	return fmt.Sprintf("user is not in conversation: uid: %s", e.UID.String())
+	return fmt.Sprintf("user is not in conversation: %s uid: %s", e.ConvID.String(), e.UID.String())
+}
+
+func (e ChatNotInConvError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_MISC, true
+}
+
+//=============================================================================
+
+type ChatNotInTeamError struct {
+	UID   gregor.UID
+	TlfID chat1.TLFID
+}
+
+func (e ChatNotInTeamError) Error() string {
+	return fmt.Sprintf("user is not in team: %v uid: %s", e.TlfID, e.UID.String())
+}
+
+func (e ChatNotInTeamError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_MISC, true
 }
 
 //=============================================================================
@@ -1719,6 +2033,10 @@ type ChatBadMsgError struct {
 
 func (e ChatBadMsgError) Error() string {
 	return e.Msg
+}
+
+func (e ChatBadMsgError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_MISC, true
 }
 
 //=============================================================================
@@ -1752,6 +2070,10 @@ func (e ChatAlreadySupersededError) Error() string {
 	return e.Msg
 }
 
+func (e ChatAlreadySupersededError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_MISC, true
+}
+
 //=============================================================================
 
 type ChatAlreadyDeletedError struct {
@@ -1762,6 +2084,10 @@ func (e ChatAlreadyDeletedError) Error() string {
 	return e.Msg
 }
 
+func (e ChatAlreadyDeletedError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_ALREADY_DELETED, true
+}
+
 //=============================================================================
 
 type ChatTLFFinalizedError struct {
@@ -1770,6 +2096,55 @@ type ChatTLFFinalizedError struct {
 
 func (e ChatTLFFinalizedError) Error() string {
 	return fmt.Sprintf("unable to create conversation on finalized TLF: %s", e.TlfID)
+}
+
+//=============================================================================
+
+type ChatDuplicateMessageError struct {
+	OutboxID chat1.OutboxID
+}
+
+func (e ChatDuplicateMessageError) Error() string {
+	return fmt.Sprintf("duplicate message send: outboxID: %s", e.OutboxID)
+}
+
+func (e ChatDuplicateMessageError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	return chat1.OutboxErrorType_DUPLICATE, true
+}
+
+//=============================================================================
+
+type ChatClientError struct {
+	Msg string
+}
+
+func (e ChatClientError) Error() string {
+	return fmt.Sprintf("error from chat server: %s", e.Msg)
+}
+
+func (e ChatClientError) IsImmediateFail() (chat1.OutboxErrorType, bool) {
+	if strings.HasPrefix(e.Msg, "Admins have set that you must be a team") {
+		return chat1.OutboxErrorType_MINWRITER, true
+	}
+	return chat1.OutboxErrorType_MISC, true
+}
+
+//=============================================================================
+
+type ChatStalePreviousStateError struct{}
+
+func (e ChatStalePreviousStateError) Error() string {
+	return "Unable to change chat channels"
+}
+
+//=============================================================================
+
+type ChatEphemeralRetentionPolicyViolatedError struct {
+	MaxAge gregor1.DurationSec
+}
+
+func (e ChatEphemeralRetentionPolicyViolatedError) Error() string {
+	return fmt.Sprintf("messages in this conversation are required to be exploding with a maximum lifetime of %v", e.MaxAge.ToDuration())
 }
 
 //=============================================================================
@@ -1876,12 +2251,34 @@ var _ error = (*PseudonymGetError)(nil)
 
 //=============================================================================
 
-type SharedDHImportError struct {
+// PseudonymGetError is sometimes written by unmarshaling (some fields of) a server response.
+type KeyPseudonymGetError struct {
 	msg string
 }
 
-func (e SharedDHImportError) Error() string {
-	return fmt.Sprintf("shared DH import error: %s", e.msg)
+func (e KeyPseudonymGetError) Error() string {
+	if e.msg == "" {
+		return "Pseudonym could not be resolved"
+	}
+	return e.msg
+}
+
+var _ error = (*KeyPseudonymGetError)(nil)
+
+//=============================================================================
+
+type PerUserKeyImportError struct {
+	msg string
+}
+
+func (e PerUserKeyImportError) Error() string {
+	return fmt.Sprintf("per-user-key import error: %s", e.msg)
+}
+
+func NewPerUserKeyImportError(format string, args ...interface{}) PerUserKeyImportError {
+	return PerUserKeyImportError{
+		msg: fmt.Sprintf(format, args...),
+	}
 }
 
 //=============================================================================
@@ -1897,3 +2294,576 @@ func NewLoginOfflineError(msg string) LoginOfflineError {
 func (e LoginOfflineError) Error() string {
 	return "LoginOffline error: " + e.msg
 }
+
+//=============================================================================
+
+type EldestSeqnoMissingError struct{}
+
+func (e EldestSeqnoMissingError) Error() string {
+	return "user's eldest seqno has not been loaded"
+}
+
+//=============================================================================
+
+type AccountResetError struct {
+	expected keybase1.UserVersion
+	received keybase1.Seqno
+}
+
+func NewAccountResetError(uv keybase1.UserVersion, r keybase1.Seqno) AccountResetError {
+	return AccountResetError{expected: uv, received: r}
+}
+
+func (e AccountResetError) Error() string {
+	if e.received == keybase1.Seqno(0) {
+		return fmt.Sprintf("Account reset, and not reestablished (for user %s)", e.expected.String())
+	}
+	return fmt.Sprintf("Account reset, reestablished at %d (for user %s)", e.received, e.expected.String())
+}
+
+type BadSessionError struct {
+	Desc string
+}
+
+func (e BadSessionError) Error() string {
+	return fmt.Sprintf("bad session: %s", e.Desc)
+}
+
+type LoginStateTimeoutError struct {
+	ActiveRequest    string
+	AttemptedRequest string
+	Duration         time.Duration
+}
+
+func (e LoginStateTimeoutError) Error() string {
+	return fmt.Sprintf("LoginState request timeout - attempted: %s, active request: %s, duration: %s", e.ActiveRequest, e.AttemptedRequest, e.Duration)
+}
+
+type KBFSNotRunningError struct{}
+
+func (e KBFSNotRunningError) Error() string {
+	const err string = "Keybase services aren't running - KBFS client not found."
+	switch runtime.GOOS {
+	case "linux":
+		return fmt.Sprintf("%s On Linux you need to start them after an update with `run_keybase` command.", err)
+	default:
+		return err
+	}
+}
+
+type RevokeCurrentDeviceError struct{}
+
+func (e RevokeCurrentDeviceError) Error() string {
+	return "cannot revoke the current device without confirmation"
+}
+
+type RevokeLastDeviceError struct{}
+
+func (e RevokeLastDeviceError) Error() string {
+	return "cannot revoke the last device in your account without confirmation"
+}
+
+// users with PGP keys who try to revoke last device get this:
+type RevokeLastDevicePGPError struct{}
+
+func (e RevokeLastDevicePGPError) Error() string {
+	return "You cannot revoke the last device in your account. You can reset your account here: keybase.io/#account-reset"
+}
+
+//=============================================================================
+
+type ImplicitTeamDisplayNameError struct {
+	msg string
+}
+
+func (e ImplicitTeamDisplayNameError) Error() string {
+	return fmt.Sprintf("Error parsing implicit team name: %s", e.msg)
+}
+
+func NewImplicitTeamDisplayNameError(format string, args ...interface{}) ImplicitTeamDisplayNameError {
+	return ImplicitTeamDisplayNameError{fmt.Sprintf(format, args...)}
+}
+
+type TeamVisibilityError struct {
+	wantedPublic bool
+	gotPublic    bool
+}
+
+func (e TeamVisibilityError) Error() string {
+	pps := func(public bool) string {
+		if public {
+			return "public"
+		}
+		return "private"
+	}
+	return fmt.Sprintf("loaded for %v team but got %v team", pps(e.wantedPublic), pps(e.gotPublic))
+}
+
+func NewTeamVisibilityError(wantedPublic, gotPublic bool) TeamVisibilityError {
+	return TeamVisibilityError{wantedPublic: wantedPublic, gotPublic: gotPublic}
+}
+
+type KeyMaskNotFoundError struct {
+	App keybase1.TeamApplication
+	Gen keybase1.PerTeamKeyGeneration
+}
+
+func (e KeyMaskNotFoundError) Error() string {
+	msg := fmt.Sprintf("You don't have access to %s for this team", e.App)
+	if e.Gen != keybase1.PerTeamKeyGeneration(0) {
+		msg += fmt.Sprintf(" (at generation %d)", int(e.Gen))
+	}
+	return msg
+}
+
+type ProvisionFailedOfflineError struct{}
+
+func (e ProvisionFailedOfflineError) Error() string {
+	return "Device provisioning failed because the device is offline"
+}
+
+//=============================================================================
+
+func UserErrorFromStatus(s keybase1.StatusCode) error {
+	switch s {
+	case keybase1.StatusCode_SCOk:
+		return nil
+	case keybase1.StatusCode_SCDeleted:
+		return UserDeletedError{}
+	default:
+		return &APIError{Code: int(s), Msg: "user status error"}
+	}
+}
+
+//=============================================================================
+
+// InvalidRepoNameError indicates that a repo name is invalid.
+type InvalidRepoNameError struct {
+	Name string
+}
+
+func (e InvalidRepoNameError) Error() string {
+	return fmt.Sprintf("Invalid repo name %q", e.Name)
+}
+
+//=============================================================================
+
+// RepoAlreadyCreatedError is returned when trying to create a repo
+// that already exists.
+type RepoAlreadyExistsError struct {
+	DesiredName  string
+	ExistingName string
+	ExistingID   string
+}
+
+func (e RepoAlreadyExistsError) Error() string {
+	return fmt.Sprintf(
+		"A repo named %s (id=%s) already existed when trying to create "+
+			"a repo named %s", e.ExistingName, e.ExistingID, e.DesiredName)
+}
+
+//=============================================================================
+
+// RepoDoesntExistError is returned when trying to delete a repo that doesn't exist.
+type RepoDoesntExistError struct {
+	Name string
+}
+
+func (e RepoDoesntExistError) Error() string {
+	return fmt.Sprintf("There is no repo named %q.", e.Name)
+}
+
+//=============================================================================
+
+// NoOpError is returned when an RPC call is issued but it would
+// result in no change, so the call is dropped.
+type NoOpError struct {
+	Desc string
+}
+
+func (e NoOpError) Error() string {
+	return e.Desc
+}
+
+//=============================================================================
+
+type NoSpaceOnDeviceError struct {
+	Desc string
+}
+
+func (e NoSpaceOnDeviceError) Error() string {
+	return e.Desc
+}
+
+//=============================================================================
+
+type TeamInviteBadTokenError struct{}
+
+func (e TeamInviteBadTokenError) Error() string {
+	return "invalid team invite token"
+}
+
+//=============================================================================
+
+type TeamWritePermDeniedError struct{}
+
+func (e TeamWritePermDeniedError) Error() string {
+	return "permission denied to modify team"
+}
+
+//=============================================================================
+
+type TeamInviteTokenReusedError struct{}
+
+func (e TeamInviteTokenReusedError) Error() string {
+	return "team invite token already used"
+}
+
+//=============================================================================
+
+type TeamBadMembershipError struct{}
+
+func (e TeamBadMembershipError) Error() string {
+	return "cannot perform operation because not a member of the team"
+}
+
+//=============================================================================
+
+type TeamProvisionalError struct {
+	CanKey                bool
+	IsPublic              bool
+	PreResolveDisplayName string
+}
+
+func (e TeamProvisionalError) Error() string {
+	ret := "team is provisional"
+	if e.CanKey {
+		ret += ", but the user can key"
+	} else {
+		ret += ", and the user cannot key"
+	}
+	return ret
+}
+
+func NewTeamProvisionalError(canKey bool, isPublic bool, dn string) error {
+	return TeamProvisionalError{canKey, isPublic, dn}
+}
+
+//=============================================================================
+
+type NoActiveDeviceError struct{}
+
+func (e NoActiveDeviceError) Error() string { return "no active device" }
+
+//=============================================================================
+
+type NoTriplesecError struct{}
+
+func (e NoTriplesecError) Error() string { return "No Triplesec was available after prompt" }
+func NewNoTriplesecError() error         { return NoTriplesecError{} }
+
+//=============================================================================
+
+type HexWrongLengthError struct{ msg string }
+
+func NewHexWrongLengthError(msg string) HexWrongLengthError { return HexWrongLengthError{msg} }
+
+func (e HexWrongLengthError) Error() string { return e.msg }
+
+//=============================================================================
+
+type EphemeralPairwiseMACsMissingUIDsError struct{ UIDs []keybase1.UID }
+
+func NewEphemeralPairwiseMACsMissingUIDsError(uids []keybase1.UID) EphemeralPairwiseMACsMissingUIDsError {
+	return EphemeralPairwiseMACsMissingUIDsError{
+		UIDs: uids,
+	}
+}
+
+func (e EphemeralPairwiseMACsMissingUIDsError) Error() string {
+	return fmt.Sprintf("Missing %d uids from pairwise macs", len(e.UIDs))
+}
+
+//=============================================================================
+
+type RecipientNotFoundError struct {
+	error
+}
+
+func NewRecipientNotFoundError(message string) error {
+	return RecipientNotFoundError{
+		error: fmt.Errorf(message),
+	}
+}
+
+//=============================================================================
+
+type TeamFTLOutdatedError struct {
+	msg string
+}
+
+func NewTeamFTLOutdatedError(s string) error {
+	return TeamFTLOutdatedError{s}
+}
+
+func (t TeamFTLOutdatedError) Error() string {
+	return fmt.Sprintf("FTL outdated: %s", t.msg)
+}
+
+var _ error = TeamFTLOutdatedError{}
+
+//=============================================================================
+
+type FeatureFlagError struct {
+	msg     string
+	feature Feature
+}
+
+func NewFeatureFlagError(s string, f Feature) error {
+	return FeatureFlagError{s, f}
+}
+
+func (f FeatureFlagError) Feature() Feature {
+	return f.feature
+}
+
+func (f FeatureFlagError) Error() string {
+	return fmt.Sprintf("Feature %q flagged off: %s", f.feature, f.msg)
+}
+
+var _ error = FeatureFlagError{}
+
+//=============================================================================
+
+type UserReverifyNeededError struct {
+	msg string
+}
+
+func NewUserReverifyNeededError(s string) error {
+	return UserReverifyNeededError{s}
+}
+
+func (e UserReverifyNeededError) Error() string {
+	return fmt.Sprintf("User green link error: %s", e.msg)
+}
+
+//=============================================================================
+
+type OfflineError struct {
+}
+
+func NewOfflineError() error {
+	return OfflineError{}
+}
+
+func (e OfflineError) Error() string {
+	return "Offline, and no cached results found"
+}
+
+//=============================================================================
+
+type VerboseError interface {
+	Error() string
+	Verbose() string
+}
+
+type InvalidStellarAccountIDError struct {
+	details string
+}
+
+func NewInvalidStellarAccountIDError(details string) InvalidStellarAccountIDError {
+	return InvalidStellarAccountIDError{
+		details: details,
+	}
+}
+
+func (e InvalidStellarAccountIDError) Error() string {
+	return "Invalid Stellar address."
+}
+
+func (e InvalidStellarAccountIDError) Verbose() string {
+	return fmt.Sprintf("Invalid Stellar address: %s", e.details)
+}
+
+//=============================================================================
+
+type ResetWithActiveDeviceError struct {
+}
+
+func (e ResetWithActiveDeviceError) Error() string {
+	return "You cannot reset your account from a logged-in device."
+}
+
+//=============================================================================
+
+type ResetMissingParamsError struct {
+	msg string
+}
+
+func NewResetMissingParamsError(msg string) error {
+	return ResetMissingParamsError{msg: msg}
+}
+
+func (e ResetMissingParamsError) Error() string {
+	return e.msg
+}
+
+//============================================================================
+
+type ChainLinkBadUnstubError struct {
+	msg string
+}
+
+func NewChainLinkBadUnstubError(s string) error {
+	return ChainLinkBadUnstubError{s}
+}
+
+func (c ChainLinkBadUnstubError) Error() string {
+	return c.msg
+}
+
+//============================================================================
+
+// AppOutdatedError indicates that an operation failed because the client does
+// not support some necessary feature and needs to be updated.
+type AppOutdatedError struct {
+	cause error
+}
+
+func NewAppOutdatedError(cause error) AppOutdatedError {
+	return AppOutdatedError{cause: cause}
+}
+
+func (e AppOutdatedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("AppOutdatedError: %v", e.cause.Error())
+	}
+	return fmt.Sprintf("AppOutdatedError")
+}
+
+//============================================================================
+
+type PushSecretWithoutPasswordError struct {
+	msg string
+}
+
+func NewPushSecretWithoutPasswordError(msg string) error {
+	return PushSecretWithoutPasswordError{msg: msg}
+}
+
+func (e PushSecretWithoutPasswordError) Error() string {
+	return e.msg
+}
+
+// HumanErrorer is an interface that errors can implement if they want to expose what went wrong to
+// humans, either via the CLI or via the electron interface. It sometimes happens that errors get
+// wrapped inside of other errors up a stack, and it's hard to know what to show the user.
+// This can help.
+type HumanErrorer interface {
+	HumanError() error
+}
+
+// HumanError takes an error and returns the topmost human error that's in the error, maybe to export
+// to the CLI, KBFS, or Electron. It's a mashup of the pkg/errors Error() function, and also our
+// own desire to return the topmost HumanError.
+//
+// See https://github.com/pkg/errors/blob/master/errors.go for the original pkg/errors code
+func HumanError(err error) error {
+	type causer interface {
+		Cause() error
+	}
+
+	for err != nil {
+		humanErrorer, ok := err.(HumanErrorer)
+		if ok {
+			tmp := humanErrorer.HumanError()
+			if tmp != nil {
+				return tmp
+			}
+		}
+		cause, ok := err.(causer)
+		if !ok {
+			break
+		}
+		err = cause.Cause()
+	}
+	return err
+}
+
+//============================================================================
+
+type TeamContactSettingsBlockError struct {
+	blockedUIDs      []keybase1.UID
+	blockedUsernames []NormalizedUsername
+}
+
+func (e TeamContactSettingsBlockError) BlockedUIDs() []keybase1.UID {
+	return e.blockedUIDs
+}
+
+func (e TeamContactSettingsBlockError) BlockedUsernames() []NormalizedUsername {
+	return e.blockedUsernames
+}
+
+func (e TeamContactSettingsBlockError) Error() string {
+	var tmp []string
+	for _, u := range e.blockedUsernames {
+		tmp = append(tmp, u.String())
+	}
+	return fmt.Sprintf("some users couldn't be contacted due to privacy settings (%s)", strings.Join(tmp, ","))
+}
+
+//=============================================================================
+
+type HiddenChainDataMissingError struct {
+	note string
+}
+
+func (e HiddenChainDataMissingError) Error() string {
+	return fmt.Sprintf("hidden chain data missing error: %s", e.note)
+}
+
+func NewHiddenChainDataMissingError(format string, args ...interface{}) HiddenChainDataMissingError {
+	return HiddenChainDataMissingError{fmt.Sprintf(format, args...)}
+}
+
+var _ error = HiddenChainDataMissingError{}
+
+type HiddenMerkleErrorType int
+
+const (
+	HiddenMerkleErrorNone HiddenMerkleErrorType = iota
+
+	HiddenMerkleErrorInconsistentLeaf
+	HiddenMerkleErrorInconsistentUncommittedSeqno
+	HiddenMerkleErrorInvalidHiddenResponseType
+	HiddenMerkleErrorInvalidLeafType
+	HiddenMerkleErrorNoHiddenChainInLeaf
+	HiddenMerkleErrorOldLinkNotYetCommitted
+	HiddenMerkleErrorRollbackCommittedSeqno
+	HiddenMerkleErrorRollbackUncommittedSeqno
+	HiddenMerkleErrorServerWitholdingLinks
+	HiddenMerkleErrorUnexpectedAbsenceProof
+)
+
+type HiddenMerkleError struct {
+	m string
+	t HiddenMerkleErrorType
+}
+
+func NewHiddenMerkleError(t HiddenMerkleErrorType, format string, args ...interface{}) HiddenMerkleError {
+	return HiddenMerkleError{
+		t: t,
+		m: fmt.Sprintf(format, args...),
+	}
+}
+
+func (e HiddenMerkleError) ErrorType() HiddenMerkleErrorType {
+	return e.t
+}
+
+func (e HiddenMerkleError) Error() string {
+	return fmt.Sprintf("hidden merkle client error (type %v): %s", e.t, e.m)
+}
+
+var _ error = HiddenMerkleError{}

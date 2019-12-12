@@ -92,7 +92,7 @@
           "name": "signKey"
         }
       ],
-      "doc": "PGPSigVerification is returned by pgpDecrypt and pgpVerify with information\n    about a the signature verification. If isSigned is false, there was no\n    signature, and the rest of the fields should be ignored."
+      "doc": "PGPSigVerification is returned by pgpDecrypt and pgpVerify with information\n    about the signature verification. If isSigned is false, there was no\n    signature, and the rest of the fields should be ignored."
     },
     {
       "type": "record",
@@ -315,6 +315,10 @@
         {
           "name": "options",
           "type": "PGPQuery"
+        },
+        {
+          "name": "encrypted",
+          "type": "boolean"
         }
       ],
       "response": {
@@ -332,6 +336,10 @@
         {
           "name": "options",
           "type": "PGPQuery"
+        },
+        {
+          "name": "encrypted",
+          "type": "boolean"
         }
       ],
       "response": {
@@ -348,6 +356,10 @@
         {
           "name": "options",
           "type": "PGPQuery"
+        },
+        {
+          "name": "encrypted",
+          "type": "boolean"
         }
       ],
       "response": {
@@ -379,6 +391,10 @@
         },
         {
           "name": "doExport",
+          "type": "boolean"
+        },
+        {
+          "name": "exportEncrypted",
           "type": "boolean"
         },
         {
@@ -481,6 +497,40 @@
       ],
       "response": null,
       "doc": "Dismiss the PGP unlock via secret_store_file notification."
+    },
+    "pgpPushPrivate": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "fingerprints",
+          "type": {
+            "type": "array",
+            "items": "PGPFingerprint"
+          }
+        }
+      ],
+      "response": null,
+      "doc": "push the PGP key that matches the given fingerprints from GnuPG to KBFS. If it is empty, then\n   push all matching PGP keys in the user's sigchain."
+    },
+    "pgpPullPrivate": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "fingerprints",
+          "type": {
+            "type": "array",
+            "items": "PGPFingerprint"
+          }
+        }
+      ],
+      "response": null,
+      "doc": "pull the given PGP keys from KBFS to the local GnuPG keychain. If it is empty, then\n   attempt to pull all matching PGP keys in the user's sigchain."
     }
   },
   "namespace": "keybase.1"

@@ -25,6 +25,7 @@ func newCmdChatMute(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Comm
 		Action: func(c *cli.Context) {
 			cmd := &CmdChatMute{Contextified: libkb.NewContextified(g)}
 			cl.ChooseCommand(cmd, "mute", c)
+			cl.SetLogForward(libcmdline.LogForwardNone)
 		},
 		Flags: append(getConversationResolverFlags(), mustGetChatFlags("unmute")...),
 	}
@@ -60,19 +61,20 @@ func (c *CmdChatMute) ParseArgv(ctx *cli.Context) error {
 func (c *CmdChatMute) Run() error {
 	ctx := context.TODO()
 
-	chatClient, err := GetChatLocalClient(c.G())
+	resolver, err := newChatConversationResolver(c.G())
 	if err != nil {
 		return err
 	}
 
-	resolver := &chatConversationResolver{G: c.G(), ChatClient: chatClient}
-	resolver.TlfClient, err = GetTlfClient(c.G())
-	if err != nil {
-		return err
+	if c.resolvingRequest.TlfName != "" {
+		if err = annotateResolvingRequest(c.G(), &c.resolvingRequest); err != nil {
+			return err
+		}
 	}
 
 	conversation, _, err := resolver.Resolve(ctx, c.resolvingRequest, chatConversationResolvingBehavior{
 		CreateIfNotExists: false,
+		MustNotExist:      false,
 		Interactive:       false,
 		IdentifyBehavior:  keybase1.TLFIdentifyBehavior_CHAT_CLI,
 	})
@@ -85,7 +87,7 @@ func (c *CmdChatMute) Run() error {
 		Status:         c.status,
 	}
 
-	_, err = chatClient.SetConversationStatusLocal(ctx, setStatusArg)
+	_, err = resolver.ChatClient.SetConversationStatusLocal(ctx, setStatusArg)
 	if err != nil {
 		return err
 	}

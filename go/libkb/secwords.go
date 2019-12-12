@@ -35,27 +35,38 @@ func secWordListN(n int) ([]string, error) {
 	return res, nil
 }
 
-func validPhrase(p string, entropy int) error {
-	numWords := secWordCount(entropy)
+func validPhrase(p string, entropies []int) error {
+
+	lens := make(map[int]bool)
+	for _, e := range entropies {
+		lens[secWordCount(e)] = true
+	}
+
 	words := strings.Split(p, " ")
 
 	if words[len(words)-1] == kexPhraseVersion {
 		words = words[:len(words)-1]
 	}
 
-	if len(words) != numWords {
-		return fmt.Errorf("phrase had %d words, expected %d", len(words), numWords)
+	if !lens[len(words)] {
+		return fmt.Errorf("phrase had %d words, expected %v", len(words), entropies)
 	}
 	for _, w := range words {
-		if !validWord(w) {
+		if !ValidSecWord(w) {
 			return fmt.Errorf("word %q is not a valid word", w)
 		}
 	}
 	return nil
 }
 
-func validWord(w string) bool {
+func ValidSecWord(w string) bool {
 	return secwordSet[w]
+}
+
+// SecWord returns the n'th word from the BIP-0039 list, mod the size
+// of the list.
+func SecWord(n int) string {
+	return secwords[n%len(secwords)]
 }
 
 // Wordlist from BIP0039:

@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/keybase/cli"
@@ -12,15 +13,27 @@ import (
 
 type CmdChatUpload struct {
 	libkb.Contextified
-	tlf      string
-	filename string
-	public   bool
-	title    string
-	cancel   func()
-	done     chan bool
+	tlf               string
+	filename          string
+	public            bool
+	title             string
+	ephemeralLifetime ephemeralLifetime
+	cancel            func()
+	done              chan bool
 }
 
 func newCmdChatUpload(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Command {
+	flags := []cli.Flag{
+		cli.BoolFlag{
+			Name:  "public",
+			Usage: "Send to public conversation (default private)",
+		},
+		cli.StringFlag{
+			Name:  "title",
+			Usage: "Title of attachment (defaults to filename)",
+		},
+	}
+	flags = append(flags, mustGetChatFlags("exploding-lifetime")...)
 	return cli.Command{
 		Name:         "upload",
 		Usage:        "Upload an attachment to a conversation",
@@ -31,17 +44,9 @@ func newCmdChatUpload(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Co
 				done:         make(chan bool, 1),
 			}
 			cl.ChooseCommand(cmd, "upload", c)
+			cl.SetLogForward(libcmdline.LogForwardNone)
 		},
-		Flags: []cli.Flag{
-			cli.BoolFlag{
-				Name:  "public",
-				Usage: "Send to public conversation (default private)",
-			},
-			cli.StringFlag{
-				Name:  "title",
-				Usage: "Title of attachment (defaults to filename)",
-			},
-		},
+		Flags: flags,
 	}
 }
 
@@ -53,18 +58,26 @@ func (c *CmdChatUpload) ParseArgv(ctx *cli.Context) error {
 	c.filename = ctx.Args()[1]
 	c.public = ctx.Bool("public")
 	c.title = ctx.String("title")
+	c.ephemeralLifetime = ephemeralLifetime{ctx.Duration("exploding-lifetime")}
 
 	return nil
 }
 
 func (c *CmdChatUpload) Run() error {
+	// Verify that we are not trying to send an ephemeral message to a public
+	// chat.
+	if c.ephemeralLifetime.Duration > 0 && c.public {
+		return fmt.Errorf("Cannot send ephemeral messages with --public set.")
+	}
+
 	opts := attachOptionsV1{
 		Channel: ChatChannel{
 			Name:   c.tlf,
 			Public: c.public,
 		},
-		Filename: c.filename,
-		Title:    c.title,
+		Filename:          c.filename,
+		Title:             c.title,
+		EphemeralLifetime: c.ephemeralLifetime,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -75,7 +88,7 @@ func (c *CmdChatUpload) Run() error {
 	}()
 
 	h := newChatServiceHandler(c.G())
-	reply := h.AttachV1(ctx, opts)
+	reply := h.AttachV1(ctx, opts, NewChatCLIUI(c.G()), NewChatCLINotifications(c.G()))
 
 	c.G().Log.Debug("AttachV1 done")
 	c.done <- true

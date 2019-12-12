@@ -42,4 +42,24 @@ func (f fakeUIRouter) GetGregorUI() (keybase1.GregorUIInterface, error) {
 	return f.gregorUI, nil
 }
 
+func (f fakeUIRouter) GetHomeUI() (keybase1.HomeUIInterface, error) {
+	return nil, nil
+}
+
+func (f fakeUIRouter) GetIdentify3UIAdapter(_ libkb.MetaContext) (libkb.IdentifyUI, error) {
+	return nil, nil
+}
+
+func (f fakeUIRouter) GetIdentify3UI(libkb.MetaContext) (keybase1.Identify3UiInterface, error) {
+	return nil, nil
+}
+
+func (f fakeUIRouter) GetChatUI() (libkb.ChatUI, error) {
+	return nil, nil
+}
+
+func (f fakeUIRouter) DumpUIs() map[libkb.UIKind]libkb.ConnectionID {
+	return nil
+}
+
 func (f fakeUIRouter) Shutdown() {}

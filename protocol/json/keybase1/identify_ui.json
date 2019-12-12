@@ -74,6 +74,10 @@
         {
           "type": "boolean",
           "name": "breaksTracking"
+        },
+        {
+          "type": "SigID",
+          "name": "sigID"
         }
       ]
     },
@@ -110,6 +114,24 @@
     },
     {
       "type": "record",
+      "name": "StellarAccount",
+      "fields": [
+        {
+          "type": "string",
+          "name": "accountID"
+        },
+        {
+          "type": "string",
+          "name": "federationAddress"
+        },
+        {
+          "type": "SigID",
+          "name": "sigID"
+        }
+      ]
+    },
+    {
+      "type": "record",
       "name": "RevokedProof",
       "fields": [
         {
@@ -119,6 +141,10 @@
         {
           "type": "TrackDiff",
           "name": "diff"
+        },
+        {
+          "type": "boolean",
+          "name": "snoozed"
         }
       ]
     },
@@ -282,6 +308,50 @@
     },
     {
       "type": "record",
+      "name": "UserTeamShowcase",
+      "fields": [
+        {
+          "type": "string",
+          "name": "fqName",
+          "jsonkey": "fq_name"
+        },
+        {
+          "type": "boolean",
+          "name": "open",
+          "jsonkey": "open"
+        },
+        {
+          "type": "boolean",
+          "name": "teamIsShowcased",
+          "jsonkey": "team_is_showcased"
+        },
+        {
+          "type": "string",
+          "name": "description",
+          "jsonkey": "description"
+        },
+        {
+          "type": "TeamRole",
+          "name": "role",
+          "jsonkey": "role"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "string"
+          },
+          "name": "publicAdmins",
+          "jsonkey": "public_admins"
+        },
+        {
+          "type": "int",
+          "name": "numMembers",
+          "jsonkey": "num_members"
+        }
+      ]
+    },
+    {
+      "type": "record",
       "name": "UserCard",
       "fields": [
         {
@@ -310,6 +380,10 @@
         },
         {
           "type": "string",
+          "name": "bioDecorated"
+        },
+        {
+          "type": "string",
           "name": "website"
         },
         {
@@ -323,6 +397,25 @@
         {
           "type": "boolean",
           "name": "theyFollowYou"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "UserTeamShowcase"
+          },
+          "name": "teamShowcase"
+        },
+        {
+          "type": "boolean",
+          "name": "registeredForAirdrop"
+        },
+        {
+          "type": "boolean",
+          "name": "blocked"
+        },
+        {
+          "type": "boolean",
+          "name": "hidFromFollowers"
         }
       ]
     },
@@ -341,6 +434,10 @@
         {
           "type": "boolean",
           "name": "expiringLocal"
+        },
+        {
+          "type": "boolean",
+          "name": "autoConfirmed"
         }
       ]
     },
@@ -533,6 +630,19 @@
         {
           "name": "c",
           "type": "Cryptocurrency"
+        }
+      ],
+      "response": null
+    },
+    "displayStellarAccount": {
+      "request": [
+        {
+          "name": "sessionID",
+          "type": "int"
+        },
+        {
+          "name": "a",
+          "type": "StellarAccount"
         }
       ],
       "response": null

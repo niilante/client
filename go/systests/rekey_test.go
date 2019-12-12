@@ -13,21 +13,23 @@ import (
 	"github.com/keybase/client/go/service"
 	"github.com/keybase/clockwork"
 	"github.com/keybase/go-framed-msgpack-rpc/rpc"
+	"github.com/stretchr/testify/require"
 	context "golang.org/x/net/context"
 )
 
 // deviceWrapper wraps a mock "device", meaning an independent running service and
 // some connected clients.
 type deviceWrapper struct {
-	tctx         *libkb.TestContext
-	clones       []*libkb.TestContext
-	stopCh       chan error
-	service      *service.Service
-	rekeyUI      *testRekeyUI
-	deviceKey    keybase1.PublicKey
-	rekeyClient  keybase1.RekeyClient
-	userClient   keybase1.UserClient
-	gregorClient keybase1.GregorClient
+	tctx               *libkb.TestContext
+	clones, usedClones []*libkb.TestContext
+	stopCh             chan error
+	service            *service.Service
+	rekeyUI            *testRekeyUI
+	deviceKey          keybase1.PublicKey
+	rekeyClient        keybase1.RekeyClient
+	userClient         keybase1.UserClient
+	accountClient      keybase1.AccountClient
+	gregorClient       keybase1.GregorClient
 }
 
 func (d *deviceWrapper) KID() keybase1.KID {
@@ -57,8 +59,42 @@ func (d *deviceWrapper) popClone() *libkb.TestContext {
 		panic("ran out of cloned environments")
 	}
 	ret := d.clones[0]
+	// Hold a reference to this clone for cleanup
+	d.usedClones = append(d.usedClones, ret)
 	d.clones = d.clones[1:]
 	return ret
+}
+
+func (d *deviceWrapper) loadEncryptionKIDs() (devices []keybase1.KID, backups []backupKey) {
+	keyMap := make(map[keybase1.KID]keybase1.PublicKey)
+
+	t := d.tctx.T
+	require.NotNil(t, d.userClient)
+	require.NotNil(t, d.userClient.Cli)
+	keys, err := d.userClient.LoadMyPublicKeys(context.TODO(), 0)
+	require.NoError(t, err)
+	for _, key := range keys {
+		keyMap[key.KID] = key
+	}
+
+	for _, key := range keys {
+		if key.IsSibkey {
+			continue
+		}
+		parent, found := keyMap[keybase1.KID(key.ParentID)]
+		if !found {
+			continue
+		}
+
+		switch parent.DeviceType {
+		case libkb.DeviceTypePaper:
+			backups = append(backups, backupKey{KID: key.KID, deviceID: parent.DeviceID})
+		case libkb.DeviceTypeDesktop:
+			devices = append(devices, key.KID)
+		default:
+		}
+	}
+	return devices, backups
 }
 
 func (rkt *rekeyTester) getFakeTLF() *fakeTLF {
@@ -74,7 +110,7 @@ func (tlf *fakeTLF) nextRevision() int {
 }
 
 type rekeyTester struct {
-	t          *testing.T
+	t          libkb.TestingTB
 	log        logger.Logger
 	devices    []*deviceWrapper
 	fakeClock  clockwork.FakeClock
@@ -83,7 +119,7 @@ type rekeyTester struct {
 	username   string
 }
 
-func newRekeyTester(t *testing.T) *rekeyTester {
+func newRekeyTester(t libkb.TestingTB) *rekeyTester {
 	return &rekeyTester{
 		t: t,
 	}
@@ -99,6 +135,7 @@ func (rkt *rekeyTester) setup(nm string) *deviceWrapper {
 func (rkt *rekeyTester) setupDevice(nm string) *deviceWrapper {
 	tctx := setupTest(rkt.t, nm)
 	tctx.G.SetClock(rkt.fakeClock)
+	tctx.G.Env.Test.UseTimeClockForNISTs = true
 	ret := &deviceWrapper{tctx: tctx}
 	rkt.devices = append(rkt.devices, ret)
 	return ret
@@ -115,6 +152,17 @@ func (rkt *rekeyTester) primaryContext() *libkb.GlobalContext {
 func (rkt *rekeyTester) cleanup() {
 	for _, od := range rkt.devices {
 		od.tctx.Cleanup()
+		if od.service != nil {
+			od.service.Stop(0)
+			err := od.stop()
+			require.NoError(od.tctx.T, err)
+		}
+		for _, cl := range od.clones {
+			cl.Cleanup()
+		}
+		for _, cl := range od.usedClones {
+			cl.Cleanup()
+		}
 	}
 }
 
@@ -149,33 +197,7 @@ func newTestRekeyUI() *testRekeyUI {
 }
 
 func (rkt *rekeyTester) loadEncryptionKIDs() (devices []keybase1.KID, backups []backupKey) {
-	keyMap := make(map[keybase1.KID]keybase1.PublicKey)
-	keys, err := rkt.primaryDevice().userClient.LoadMyPublicKeys(context.TODO(), 0)
-	if err != nil {
-		rkt.t.Fatalf("Failed to LoadMyPublicKeys: %s", err)
-	}
-	for _, key := range keys {
-		keyMap[key.KID] = key
-	}
-
-	for _, key := range keys {
-		if key.IsSibkey {
-			continue
-		}
-		parent, found := keyMap[keybase1.KID(key.ParentID)]
-		if !found {
-			continue
-		}
-
-		switch parent.DeviceType {
-		case libkb.DeviceTypePaper:
-			backups = append(backups, backupKey{KID: key.KID, deviceID: parent.DeviceID})
-		case libkb.DeviceTypeDesktop:
-			devices = append(devices, key.KID)
-		default:
-		}
-	}
-	return devices, backups
+	return rkt.primaryDevice().loadEncryptionKIDs()
 }
 
 func (rkt *rekeyTester) signupUser(dw *deviceWrapper) {
@@ -230,6 +252,7 @@ func (rkt *rekeyTester) startUIsAndClients(dw *deviceWrapper) {
 		dw.rekeyClient = keybase1.RekeyClient{Cli: cli}
 		dw.userClient = keybase1.UserClient{Cli: cli}
 		dw.gregorClient = keybase1.GregorClient{Cli: cli}
+		dw.accountClient = keybase1.AccountClient{Cli: cli}
 		return nil
 	}
 
@@ -289,6 +312,7 @@ func (rkt *rekeyTester) changeKeysOnHomeTLF(kids []keybase1.KID) {
 	// to the API server.
 	g := rkt.primaryContext()
 	fakeTLF := rkt.getFakeTLF()
+	mctx := libkb.NewMetaContextBackground(g)
 	apiArg := libkb.APIArg{
 		Args: libkb.HTTPArgs{
 			"tlfid":          libkb.S{Val: string(fakeTLF.id)},
@@ -298,7 +322,7 @@ func (rkt *rekeyTester) changeKeysOnHomeTLF(kids []keybase1.KID) {
 		Endpoint:    "test/fake_home_tlf",
 		SessionType: libkb.APISessionTypeREQUIRED,
 	}
-	_, err := g.API.Post(apiArg)
+	_, err := g.API.Post(mctx, apiArg)
 	if err != nil {
 		rkt.t.Fatalf("Failed to post fake TLF: %s", err)
 	}
@@ -321,7 +345,8 @@ func (rkt *rekeyTester) bumpTLF(kid keybase1.KID) {
 		SessionType: libkb.APISessionTypeREQUIRED,
 	}
 
-	_, err := g.API.Post(apiArg)
+	mctx := libkb.NewMetaContextBackground(g)
+	_, err := g.API.Post(mctx, apiArg)
 	if err != nil {
 		rkt.t.Fatalf("Failed to bump rekey to front of line: %s", err)
 	}
@@ -334,14 +359,13 @@ func (rkt *rekeyTester) kickRekeyd() {
 	g := rkt.primaryContext()
 
 	apiArg := libkb.APIArg{
-		Endpoint: "test/accelerate_rekeyd",
-		Args: libkb.HTTPArgs{
-			"timeout": libkb.I{Val: 2000},
-		},
+		Endpoint:    "test/accelerate_rekeyd",
+		Args:        libkb.HTTPArgs{},
 		SessionType: libkb.APISessionTypeREQUIRED,
 	}
 
-	_, err := g.API.Post(apiArg)
+	mctx := libkb.NewMetaContextBackground(g)
+	_, err := g.API.Post(mctx, apiArg)
 	if err != nil {
 		rkt.t.Errorf("Failed to accelerate rekeyd: %s", err)
 	}
@@ -351,8 +375,8 @@ func (rkt *rekeyTester) assertRekeyWindowPushed(dw *deviceWrapper) {
 	rkt.log.Debug("+ assertRekeyWindowPushed")
 	select {
 	case <-dw.rekeyUI.refreshes:
-	case <-time.After(10 * time.Second):
-		rkt.t.Fatalf("no gregor came in after 10s; something is broken")
+	case <-time.After(30 * time.Second):
+		rkt.t.Fatalf("no gregor came in after 30s; something is broken")
 	}
 	rkt.log.Debug("- assertRekeyWindowPushed")
 }
@@ -387,38 +411,6 @@ func (rkt *rekeyTester) clearAllEvents(dw *deviceWrapper) {
 	rkt.log.Debug("- cleared all events")
 }
 
-func (rkt *rekeyTester) clearAllRefreshes(dw *deviceWrapper) {
-	loop := true
-	rkt.log.Debug("+ clearing all refreshes")
-	for loop {
-		select {
-		case r := <-dw.rekeyUI.refreshes:
-			rkt.log.Debug("| Got refresh: %+v", r)
-		default:
-			loop = false
-		}
-	}
-	rkt.log.Debug("- cleared all refreshes")
-}
-
-func (rkt *rekeyTester) waitForEvent(dw *deviceWrapper, wanted service.RekeyInterrupt) {
-	rkt.log.Debug("+ waitForEvent(%v)", wanted)
-	defer rkt.log.Debug("- waitForEvent(%v)", wanted)
-	timeout := 10 * time.Second
-	for {
-		select {
-		case received := <-dw.rekeyUI.events:
-			if received.InterruptType == int(wanted) {
-				rkt.log.Debug("| found event!")
-				return
-			}
-			rkt.log.Debug("| ignored event: %v", received)
-		case <-time.After(timeout):
-			rkt.t.Fatalf("Failed to get %d event after %s", wanted, timeout)
-		}
-	}
-}
-
 func (rkt *rekeyTester) snoozeRekeyWindow(dw *deviceWrapper) {
 	rkt.log.Debug("+ -------- snoozeRekeyWindow ---------")
 	defer rkt.log.Debug("- -------- snoozeRekeyWindow ---------")
@@ -436,7 +428,7 @@ func (rkt *rekeyTester) snoozeRekeyWindow(dw *deviceWrapper) {
 	}
 	rkt.clearAllEvents(dw)
 
-	// Our snooze should be 23 hours long, and should be resistent
+	// Our snooze should be 23 hours long, and should be resistant
 	// to interrupts.
 	rkt.log.Debug("+ confirming no rekey activity (1)")
 	rkt.confirmNoRekeyUIActivity(dw, 14, false)
@@ -481,6 +473,8 @@ type rekeyBackupKeyUI struct {
 	secret string
 }
 
+var _ libkb.LoginUI = (*rekeyBackupKeyUI)(nil)
+
 func (u *rekeyBackupKeyUI) DisplayPaperKeyPhrase(_ context.Context, arg keybase1.DisplayPaperKeyPhraseArg) error {
 	u.secret = arg.Phrase
 	return nil
@@ -505,6 +499,30 @@ func (u *rekeyBackupKeyUI) GetSecretUI() libkb.SecretUI {
 
 func (u *rekeyBackupKeyUI) GetPassphrase(p keybase1.GUIEntryArg, terminal *keybase1.SecretEntryArg) (res keybase1.GetPassphraseRes, err error) {
 	return res, err
+}
+
+func (u *rekeyBackupKeyUI) PromptResetAccount(_ context.Context, arg keybase1.PromptResetAccountArg) (keybase1.ResetPromptResponse, error) {
+	return keybase1.ResetPromptResponse_NOTHING, nil
+}
+
+func (u *rekeyBackupKeyUI) DisplayResetProgress(_ context.Context, arg keybase1.DisplayResetProgressArg) error {
+	return nil
+}
+
+func (u *rekeyBackupKeyUI) ExplainDeviceRecovery(_ context.Context, arg keybase1.ExplainDeviceRecoveryArg) error {
+	return nil
+}
+
+func (u *rekeyBackupKeyUI) PromptPassphraseRecovery(_ context.Context, arg keybase1.PromptPassphraseRecoveryArg) (bool, error) {
+	return false, nil
+}
+
+func (u *rekeyBackupKeyUI) ChooseDeviceToRecoverWith(_ context.Context, arg keybase1.ChooseDeviceToRecoverWithArg) (keybase1.DeviceID, error) {
+	return "", nil
+}
+
+func (u *rekeyBackupKeyUI) DisplayResetMessage(_ context.Context, arg keybase1.DisplayResetMessageArg) error {
+	return nil
 }
 
 func (rkt *rekeyTester) findNewBackupKey(newList []backupKey) (ret backupKey, found bool) {
@@ -581,8 +599,8 @@ func (rkt *rekeyTester) expectAlreadyKeyedNoop(dw *deviceWrapper) {
 				rkt.t.Fatalf("Got wrong event type: %+v", ev)
 				done = true
 			}
-		case <-time.After(10 * time.Second):
-			rkt.t.Fatal("Didn't get an event before 10s timeout")
+		case <-time.After(30 * time.Second):
+			rkt.t.Fatal("Didn't get an event before 30s timeout")
 		}
 	}
 	rkt.confirmNoRekeyUIActivity(dw, 28, false)
@@ -593,6 +611,8 @@ type rekeyProvisionUI struct {
 	username  string
 	backupKey backupKey
 }
+
+var _ libkb.LoginUI = (*rekeyProvisionUI)(nil)
 
 func (r *rekeyProvisionUI) GetEmailOrUsername(context.Context, int) (string, error) {
 	return r.username, nil
@@ -640,6 +660,24 @@ func (r *rekeyProvisionUI) GetPassphrase(context.Context, keybase1.GetPassphrase
 	ret.Passphrase = r.backupKey.secret
 	return ret, nil
 }
+func (r *rekeyProvisionUI) PromptResetAccount(_ context.Context, arg keybase1.PromptResetAccountArg) (keybase1.ResetPromptResponse, error) {
+	return keybase1.ResetPromptResponse_NOTHING, nil
+}
+func (r *rekeyProvisionUI) DisplayResetProgress(_ context.Context, arg keybase1.DisplayResetProgressArg) error {
+	return nil
+}
+func (r *rekeyProvisionUI) ExplainDeviceRecovery(_ context.Context, arg keybase1.ExplainDeviceRecoveryArg) error {
+	return nil
+}
+func (r *rekeyProvisionUI) PromptPassphraseRecovery(_ context.Context, arg keybase1.PromptPassphraseRecoveryArg) (bool, error) {
+	return false, nil
+}
+func (r *rekeyProvisionUI) ChooseDeviceToRecoverWith(_ context.Context, arg keybase1.ChooseDeviceToRecoverWithArg) (keybase1.DeviceID, error) {
+	return "", nil
+}
+func (r *rekeyProvisionUI) DisplayResetMessage(_ context.Context, arg keybase1.DisplayResetMessageArg) error {
+	return nil
+}
 
 func (rkt *rekeyTester) provisionNewDevice() *deviceWrapper {
 	rkt.log.Debug("+ ---------- provisionNewDevice ----------")
@@ -676,6 +714,7 @@ func (rkt *rekeyTester) provisionNewDevice() *deviceWrapper {
 			return err
 		}
 		loginClient = keybase1.LoginClient{Cli: cli}
+		_ = loginClient
 		dev2.rekeyClient = keybase1.RekeyClient{Cli: cli}
 		return nil
 	}
@@ -698,13 +737,8 @@ func (rkt *rekeyTester) provisionNewDevice() *deviceWrapper {
 
 	// Clear the paper key because we don't want it hanging around to
 	// solve the problems we're trying to induce.
-	err := dev2.tctx.G.LoginState().Account(func(a *libkb.Account) {
-		a.ClearPaperKeys()
-	}, "provisionNewDevice")
-
-	if err != nil {
-		rkt.t.Fatalf("failed to clear keys: %s", err)
-	}
+	m := libkb.NewMetaContextBackground(dev2.tctx.G)
+	m.ActiveDevice().ClearProvisioningKey(m)
 
 	return dev2
 }
@@ -781,7 +815,7 @@ func (rkt *rekeyTester) confirmGregorStateIsClean() {
 	defer rkt.log.Debug("- confirmGregorStateIsClean")
 
 	start := time.Now()
-	last := start.Add(3 * time.Second)
+	last := start.Add(3 * time.Second * libkb.CITimeMultiplier(rkt.primaryContext()))
 	i := 0
 	var delay time.Duration
 
@@ -809,7 +843,7 @@ func (rkt *rekeyTester) fullyRekeyAndAssertCleared(dw *deviceWrapper) {
 	rkt.confirmNoRekeyUIActivity(dw, 14, false)
 }
 
-func TestRekey(t *testing.T) {
+func testRekeyOnce(t libkb.TestingTB) {
 	rkt := newRekeyTester(t)
 	primaryDevice := rkt.setup("rekey")
 	defer rkt.cleanup()
@@ -854,7 +888,7 @@ func TestRekey(t *testing.T) {
 	rkt.snoozeRekeyWindow(secondaryDevice)
 
 	// 10. Generate a new backup key, but make sure the snooze still holds.
-	// For some reason, this doesn't work on the secondary dervice.
+	// For some reason, this doesn't work on the secondary device.
 	// Merg. But shouldn't really matter.
 	rkt.generateNewBackupKey(primaryDevice)
 
@@ -876,4 +910,8 @@ func TestRekey(t *testing.T) {
 
 	// 16. Confirm that gregor is clean
 	rkt.confirmGregorStateIsClean()
+}
+
+func TestRekey(t *testing.T) {
+	retryFlakeyTestOnlyUseIfPermitted(t, 5, testRekeyOnce)
 }

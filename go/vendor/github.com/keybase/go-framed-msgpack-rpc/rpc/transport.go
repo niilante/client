@@ -1,11 +1,10 @@
 package rpc
 
 import (
-	"bufio"
+	"fmt"
 	"io"
 	"net"
-
-	"github.com/keybase/go-codec/codec"
+	"sync"
 )
 
 type WrapErrorFunc func(error) interface{}
@@ -37,67 +36,77 @@ type Transporter interface {
 	// After done() is closed, successive calls to err return the
 	// same value.
 	err() error
-}
 
-type connDecoder struct {
-	decoder
-	net.Conn
-	Reader *bufio.Reader
-}
-
-func newConnDecoder(c net.Conn) *connDecoder {
-	br := bufio.NewReader(c)
-	mh := &codec.MsgpackHandle{WriteExt: true}
-
-	return &connDecoder{
-		Conn:    c,
-		Reader:  br,
-		decoder: codec.NewDecoder(br, mh),
-	}
+	// Close closes the transport and releases resources.
+	Close()
 }
 
 var _ Transporter = (*transport)(nil)
 
 type transport struct {
-	cdec       *connDecoder
+	c          net.Conn
 	enc        *framedMsgpackEncoder
 	dispatcher dispatcher
 	receiver   receiver
-	packetizer packetizer
+	packetizer *packetizer
 	protocols  *protocolHandler
 	calls      *callContainer
 	log        LogInterface
-	startCh    chan struct{}
+	closeOnce  sync.Once
+	startOnce  sync.Once
 	stopCh     chan struct{}
 
 	// Filled in right before stopCh is closed.
 	stopErr error
 }
 
-func NewTransport(c net.Conn, l LogFactory, wef WrapErrorFunc) Transporter {
-	cdec := newConnDecoder(c)
+// DefaultMaxFrameLength (100 MiB) is a reasonable default value for
+// the maxFrameLength parameter in NewTransporter.
+const DefaultMaxFrameLength = 100 * 1024 * 1024
+
+// NewTransporter creates a new Transporter from the given connection
+// and parameters. Both sides of a connection should use the same
+// number for maxFrameLength.
+func NewTransport(c net.Conn, l LogFactory, wef WrapErrorFunc, maxFrameLength int32) Transporter {
+	if maxFrameLength <= 0 {
+		panic(fmt.Sprintf("maxFrameLength must be positive: got %d", maxFrameLength))
+	}
+
 	if l == nil {
 		l = NewSimpleLogFactory(nil, nil)
 	}
-	log := l.NewLog(cdec.RemoteAddr())
-
-	startCh := make(chan struct{}, 1)
-	startCh <- struct{}{}
+	log := l.NewLog(c.RemoteAddr())
 
 	ret := &transport{
-		cdec:      cdec,
+		c:         c,
 		log:       log,
-		startCh:   startCh,
 		stopCh:    make(chan struct{}),
 		protocols: newProtocolHandler(wef),
 		calls:     newCallContainer(),
 	}
-	enc := newFramedMsgpackEncoder(ret.cdec)
+	enc := newFramedMsgpackEncoder(maxFrameLength, c)
 	ret.enc = enc
 	ret.dispatcher = newDispatch(enc, ret.calls, log)
 	ret.receiver = newReceiveHandler(enc, ret.protocols, log)
-	ret.packetizer = newPacketHandler(cdec.Reader, ret.protocols, ret.calls)
+	ret.packetizer = newPacketizer(maxFrameLength, c, ret.protocols, ret.calls, log)
 	return ret
+}
+
+func (t *transport) Close() {
+	t.closeOnce.Do(func() {
+		// Since the receiver might require the transport, we have to
+		// close it before terminating our loops
+		close(t.stopCh)
+		t.dispatcher.Close()
+		<-t.receiver.Close()
+
+		// First inform the encoder that it should close
+		encoderClosed := t.enc.Close()
+		// Unblock any remaining writes
+		t.c.Close()
+		// Wait for the encoder to finish handling the now unblocked writes
+		<-encoderClosed
+	})
 }
 
 func (t *transport) IsConnected() bool {
@@ -110,17 +119,9 @@ func (t *transport) IsConnected() bool {
 }
 
 func (t *transport) receiveFrames() <-chan struct{} {
-	select {
-	case <-t.startCh:
-		// First time -- start receiving frames.
-		go func() {
-			t.receiveFramesLoop()
-		}()
-
-	default:
-		// Subsequent times -- do nothing.
-	}
-
+	t.startOnce.Do(func() {
+		go t.receiveFramesLoop()
+	})
 	return t.stopCh
 }
 
@@ -143,7 +144,9 @@ func (t *transport) receiveFramesLoop() {
 	for shouldContinue(err) {
 		var rpc rpcMessage
 		if rpc, err = t.packetizer.NextFrame(); shouldReceive(rpc) {
-			t.receiver.Receive(rpc)
+			if rerr := t.receiver.Receive(rpc); rerr != nil {
+				t.log.Info("error on Receive: %v", rerr)
+			}
 		}
 	}
 
@@ -154,18 +157,7 @@ func (t *transport) receiveFramesLoop() {
 	// ordering.
 	t.stopErr = err
 
-	// Since the receiver might require the transport, we have to
-	// close it before terminating our loops
-	close(t.stopCh)
-	t.dispatcher.Close()
-	<-t.receiver.Close()
-
-	// First inform the encoder that it should close
-	encoderClosed := t.enc.Close()
-	// Unblock any remaining writes
-	t.cdec.Close()
-	// Wait for the encoder to finish handling the now unblocked writes
-	<-encoderClosed
+	t.Close()
 }
 
 func (t *transport) getDispatcher() (dispatcher, error) {

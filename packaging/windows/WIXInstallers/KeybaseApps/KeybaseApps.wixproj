@@ -6,35 +6,77 @@
     <ProductVersion>%25KEYBASE_VERSION%25</ProductVersion>
     <ProjectGuid>cb18799f-a8c7-4571-b80f-6c00a0cd88fd</ProjectGuid>
     <SchemaVersion>2.0</SchemaVersion>
-    <OutputName>Keybase</OutputName>
+    <OutputName>Keybase_%25KEYBASE_VERSION%25.%25GOARCH%25</OutputName>
     <OutputType>Package</OutputType>
     <WixTargetsPath Condition=" '$(WixTargetsPath)' == '' AND '$(MSBuildExtensionsPath32)' != '' ">$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath>
     <WixTargetsPath Condition=" '$(WixTargetsPath)' == '' ">$(MSBuildExtensionsPath)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath>
     <Name>KeybaseApps</Name>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Platform)\$(Configuration)\</IntermediateOutputPath>
+    <DefineConstants>Debug;GuiSourceDir=$(GOPATH)\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64</DefineConstants>
+    <SuppressIces>ICE20;ICE38</SuppressIces>
+    <CompilerAdditionalOptions />
+    <LinkerAdditionalOptions>-ext WixUtilExtension.dll</LinkerAdditionalOptions>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Platform)\$(Configuration)\</IntermediateOutputPath>
+    <SuppressValidation>False</SuppressValidation>
+    <SuppressIces>ICE20;ICE38;ICE91;ICE60</SuppressIces>
+    <DefineConstants>GuiSourceDir=$(GOPATH)\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64</DefineConstants>
+    <CompilerAdditionalOptions />
+    <LinkerAdditionalOptions>-ext WixUtilExtension.dll</LinkerAdditionalOptions>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <IntermediateOutputPath>obj\$(Configuration)\</IntermediateOutputPath>
     <DefineConstants>Debug;GuiSourceDir=$(GOPATH)\src\github.com\keybase\client\shared\desktop\release\win32-ia32\Keybase-win32-ia32</DefineConstants>
     <SuppressIces>ICE20;ICE38</SuppressIces>
+    <CompilerAdditionalOptions>
+    </CompilerAdditionalOptions>
+    <LinkerAdditionalOptions>-ext WixUtilExtension.dll</LinkerAdditionalOptions>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <IntermediateOutputPath>obj\$(Configuration)\</IntermediateOutputPath>
     <SuppressValidation>False</SuppressValidation>
-    <SuppressIces>ICE20;ICE38</SuppressIces>
+    <SuppressIces>ICE20;ICE38;ICE91;ICE60</SuppressIces>
     <DefineConstants>GuiSourceDir=$(GOPATH)\src\github.com\keybase\client\shared\desktop\release\win32-ia32\Keybase-win32-ia32</DefineConstants>
+    <CompilerAdditionalOptions>
+    </CompilerAdditionalOptions>
+    <LinkerAdditionalOptions>-ext WixUtilExtension.dll</LinkerAdditionalOptions>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="gui.wxs" />
     <Compile Include="KeybaseApps.wxs" />
   </ItemGroup>
+  <ItemGroup>
+    <WixExtension Include="WixNetFxExtension">
+      <HintPath>$(WixExtDir)\WixNetFxExtension.dll</HintPath>
+      <Name>WixNetFxExtension</Name>
+    </WixExtension>
+  </ItemGroup>
   <Import Project="$(WixTargetsPath)" />
   <PropertyGroup>
-    <PreBuildEvent>"%25WIX%25bin\heat" dir %25GOPATH%25\src\github.com\keybase\client\shared\desktop\release\win32-ia32\Keybase-win32-ia32 -cg GuiComponents -ag -sfrag -template fragment  -var var.GuiSourceDir  -dr INSTALLFOLDER -t $(ProjectDir)\gui.xsl -out $(ProjectDir)\gui.wxs</PreBuildEvent>
+    <PostBuildEvent>if /I "$(ConfigurationName)" == "Release" "%25SIGNTOOL%25" sign /v /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /i "%25CERTISSUER%25" "$(TargetDir)$(TargetFileName)"</PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup>
-    <PostBuildEvent>if /I "$(ConfigurationName)" == "Release" "%25SIGNTOOL%25" sign /v /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /i "%25CERTISSUER%25" "$(TargetDir)$(TargetFileName)"</PostBuildEvent>
+      <PreBuildEvent>
+echo ignore > "$(ProjectDir)ignore.txt"
+"%25WIX%25bin\heat" dir %25GOPATH%25\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64 -cg GuiComps -ag -sfrag -template fragment  -var var.GuiSourceDir  -dr INSTALLFOLDER -t $(ProjectDir)\gui.xsl -out $(ProjectDir)\gui.wxs
+echo "Dumping gui.wsx"
+type "$(ProjectDir)\gui.wxs"
+cd /d "$(ProjectDir)"
+if NOT exist Redist\dokan-dev\1.2.2.1000\DokanSetup_redist.exe (
+      if NOT exist Redist\ mkdir Redist
+      if NOT exist Redist\dokan-dev\ mkdir Redist\dokan-dev\
+      if NOT exist Redist\dokan-dev\1.2.2.1000 mkdir Redist\dokan-dev\1.2.2.1000
+      powershell -command "wget https://s3.amazonaws.com/prerelease.keybase.io/windows-support/dokan-dev/1.2.2.1000/DokanSetup_redist.exe -UseBasicParsing -OutFile Redist\dokan-dev\1.2.2.1000\DokanSetup_redist.exe"
+)
+for /f "usebackq tokens=2%2a" %25%25i in (`powershell Get-FileHash -Algorithm sha1 Redist\dokan-dev\1.2.2.1000\DokanSetup_redist.exe`) do set DOKANLIBHASH=%25%25i
+if NOT %25DOKANLIBHASH%25==F811156DBB8616F61214A4F247D8D68DDAD2D71C exit /B 1</PreBuildEvent>
   </PropertyGroup>
   <!--
 	To modify your build process, add your task inside one of the targets below and uncomment it.

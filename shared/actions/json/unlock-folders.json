@@ -1,0 +1,18 @@
+{
+  "prelude": [],
+  "actions": {
+    "checkPaperKey": { "paperKey": "string" },
+    "openPopup": {},
+    "closePopup": {},
+    "checkPaperKeyDone": { "error?": "string" },
+    "closeDone": {},
+    "finish": {},
+    "newRekeyPopup": {
+      "sessionID": "number",
+      "devices": "Array<RPCTypes.Device>",
+      "problemSet": "RPCTypes.ProblemSet"
+    },
+    "onBackFromPaperKey": {},
+    "toPaperKeyInput": {}
+  }
+}

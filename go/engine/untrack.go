@@ -9,19 +9,25 @@ import (
 )
 
 type UntrackEngineArg struct {
-	Username libkb.NormalizedUsername
-	Me       *libkb.User
+	Username   libkb.NormalizedUsername
+	Me         *libkb.User
+	SigVersion libkb.SigVersion
 }
 
 type UntrackEngine struct {
 	arg                   *UntrackEngineArg
 	signingKeyPub         libkb.GenericKey
 	untrackStatementBytes []byte
+	untrackStatement      *libkb.ProofMetadataRes
 	libkb.Contextified
 }
 
 // NewUntrackEngine creates a default UntrackEngine for tracking theirName.
-func NewUntrackEngine(arg *UntrackEngineArg, g *libkb.GlobalContext) *UntrackEngine {
+func NewUntrackEngine(g *libkb.GlobalContext, arg *UntrackEngineArg) *UntrackEngine {
+	if arg.SigVersion == libkb.KeybaseNullSigVersion {
+		arg.SigVersion = libkb.GetDefaultSigVersion(g)
+	}
+
 	return &UntrackEngine{
 		arg:          arg,
 		Contextified: libkb.NewContextified(g),
@@ -39,22 +45,22 @@ func (e *UntrackEngine) Prereqs() Prereqs {
 }
 
 func (e *UntrackEngine) RequiredUIs() []libkb.UIKind {
-	return []libkb.UIKind{
-		libkb.SecretUIKind,
-	}
+	return []libkb.UIKind{}
 }
 
 func (e *UntrackEngine) SubConsumers() []libkb.UIConsumer {
 	return []libkb.UIConsumer{}
 }
 
-func (e *UntrackEngine) Run(ctx *Context) (err error) {
+func (e *UntrackEngine) Run(m libkb.MetaContext) (err error) {
+	defer m.Trace("UntrackEngine#Run", func() error { return err })()
+
 	e.arg.Me, err = e.loadMe()
 	if err != nil {
 		return
 	}
 
-	them, remoteLink, localLink, err := e.loadThem()
+	them, remoteLink, localLink, err := e.loadThem(m)
 	if err != nil {
 		return
 	}
@@ -64,12 +70,12 @@ func (e *UntrackEngine) Run(ctx *Context) (err error) {
 		return
 	}
 
-	untrackStatement, err := e.arg.Me.UntrackingProofFor(e.signingKeyPub, them)
+	e.untrackStatement, err = e.arg.Me.UntrackingProofFor(m, e.signingKeyPub, e.arg.SigVersion, them)
 	if err != nil {
 		return
 	}
 
-	e.untrackStatementBytes, err = untrackStatement.Marshal()
+	e.untrackStatementBytes, err = e.untrackStatement.J.Marshal()
 	if err != nil {
 		return
 	}
@@ -79,7 +85,7 @@ func (e *UntrackEngine) Run(ctx *Context) (err error) {
 	didUntrack := false
 
 	if localLink != nil {
-		err = e.storeLocalUntrack(them)
+		err = e.storeLocalUntrack(m, them)
 		if err != nil {
 			return
 		}
@@ -87,7 +93,7 @@ func (e *UntrackEngine) Run(ctx *Context) (err error) {
 	}
 
 	if remoteLink != nil && !remoteLink.IsRevoked() {
-		err = e.storeRemoteUntrack(them, ctx)
+		err = e.storeRemoteUntrack(m, them)
 		if err != nil {
 			return
 		}
@@ -99,11 +105,12 @@ func (e *UntrackEngine) Run(ctx *Context) (err error) {
 		return
 	}
 
-	e.G().UserChanged(e.arg.Me.GetUID())
-	e.G().UserChanged(them.GetUID())
+	e.G().UserChanged(m.Ctx(), e.arg.Me.GetUID())
+	e.G().UserChanged(m.Ctx(), them.GetUID())
 
 	e.G().NotifyRouter.HandleTrackingChanged(e.arg.Me.GetUID(), e.arg.Me.GetNormalizedName(), false)
 	e.G().NotifyRouter.HandleTrackingChanged(them.GetUID(), them.GetNormalizedName(), false)
+	m.G().IdentifyDispatch.NotifyTrackingSuccess(m, them.GetUID())
 
 	return
 }
@@ -112,7 +119,7 @@ func (e *UntrackEngine) loadMe() (me *libkb.User, err error) {
 	return libkb.LoadMe(libkb.NewLoadUserArg(e.G()))
 }
 
-func (e *UntrackEngine) loadThem() (them *libkb.User, remoteLink, localLink *libkb.TrackChainLink, err error) {
+func (e *UntrackEngine) loadThem(m libkb.MetaContext) (them *libkb.User, remoteLink, localLink *libkb.TrackChainLink, err error) {
 	var rLink *libkb.TrackChainLink
 	trackMap := e.arg.Me.IDTable().GetTrackMap()
 	if links, ok := trackMap[e.arg.Username]; ok && (len(links) > 0) {
@@ -129,7 +136,7 @@ func (e *UntrackEngine) loadThem() (them *libkb.User, remoteLink, localLink *lib
 	}
 
 	if uid.IsNil() {
-		res := e.G().Resolver.Resolve(e.arg.Username.String())
+		res := e.G().Resolver.Resolve(m, e.arg.Username.String())
 		if err = res.GetError(); err != nil {
 			return
 		}
@@ -142,7 +149,7 @@ func (e *UntrackEngine) loadThem() (them *libkb.User, remoteLink, localLink *lib
 		}
 	}
 
-	lLink, err := libkb.LocalTrackChainLinkFor(e.arg.Me.GetUID(), uid, e.G())
+	lLink, err := libkb.LocalTrackChainLinkFor(m, e.arg.Me.GetUID(), uid)
 	if err != nil {
 		return
 	}
@@ -168,8 +175,6 @@ func (e *UntrackEngine) loadThem() (them *libkb.User, remoteLink, localLink *lib
 			err = libkb.NewUntrackError("Username mismatch: expected @%s, got @%s", e.arg.Username, trackedUsername)
 			return
 		}
-
-		uidTrusted = true
 	}
 
 	them = libkb.NewUserThin(e.arg.Username.String(), uid)
@@ -178,42 +183,60 @@ func (e *UntrackEngine) loadThem() (them *libkb.User, remoteLink, localLink *lib
 	return
 }
 
-func (e *UntrackEngine) storeLocalUntrack(them *libkb.User) error {
+func (e *UntrackEngine) storeLocalUntrack(m libkb.MetaContext, them *libkb.User) error {
 	// Also do a removal in case of expiring local tracks
-	return libkb.RemoveLocalTracks(e.arg.Me.GetUID(), them.GetUID(), e.G())
+	return libkb.RemoveLocalTracks(m, e.arg.Me.GetUID(), them.GetUID())
 }
 
-func (e *UntrackEngine) storeRemoteUntrack(them *libkb.User, ctx *Context) (err error) {
-	e.G().Log.Debug("+ StoreRemoteUntrack")
-	defer e.G().Log.Debug("- StoreRemoteUntrack -> %s", libkb.ErrToOk(err))
+func (e *UntrackEngine) storeRemoteUntrack(m libkb.MetaContext, them *libkb.User) (err error) {
+	defer m.Trace("UntrackEngine#StoreRemoteUntrack", func() error { return err })()
 
+	me := e.arg.Me
 	arg := libkb.SecretKeyArg{
-		Me:      e.arg.Me,
+		Me:      me,
 		KeyType: libkb.DeviceSigningKeyType,
 	}
-	var signingKeyPriv libkb.GenericKey
-	if signingKeyPriv, err = e.G().Keyrings.GetSecretKeyWithPrompt(ctx.SecretKeyPromptArg(arg, "untracking signature")); err != nil {
+	var signingKey libkb.GenericKey
+	if signingKey, err = e.G().Keyrings.GetSecretKeyWithPrompt(m, m.SecretKeyPromptArg(arg, "untracking signature")); err != nil {
 		return
 	}
 
-	var sig string
-	var sigid keybase1.SigID
-	if sig, sigid, err = signingKeyPriv.SignToString(e.untrackStatementBytes); err != nil {
+	sigVersion := e.arg.SigVersion
+	sig, sigID, linkID, err := libkb.MakeSig(
+		m,
+		signingKey,
+		libkb.LinkTypeUntrack,
+		e.untrackStatementBytes,
+		false, /* hasRevokes */
+		keybase1.SeqType_PUBLIC,
+		false, /* ignoreIfUnsupported */
+		me,
+		sigVersion)
+
+	if err != nil {
 		return
 	}
 
-	_, err = e.G().API.Post(libkb.APIArg{
+	httpsArgs := libkb.HTTPArgs{
+		"sig_id_base":  libkb.S{Val: sigID.ToString(false)},
+		"sig_id_short": libkb.S{Val: sigID.ToShortID()},
+		"sig":          libkb.S{Val: sig},
+		"uid":          libkb.UIDArg(them.GetUID()),
+		"type":         libkb.S{Val: "untrack"},
+		"signing_kid":  e.signingKeyPub.GetKID(),
+	}
+
+	if sigVersion == libkb.KeybaseSignatureV2 {
+		httpsArgs["sig_inner"] = libkb.S{Val: string(e.untrackStatementBytes)}
+	}
+
+	_, err = m.G().API.Post(m, libkb.APIArg{
 		Endpoint:    "follow",
 		SessionType: libkb.APISessionTypeREQUIRED,
-		Args: libkb.HTTPArgs{
-			"sig_id_base":  libkb.S{Val: sigid.ToString(false)},
-			"sig_id_short": libkb.S{Val: sigid.ToShortID()},
-			"sig":          libkb.S{Val: sig},
-			"uid":          libkb.UIDArg(them.GetUID()),
-			"type":         libkb.S{Val: "untrack"},
-			"signing_kid":  e.signingKeyPub.GetKID(),
-		},
+		Args:        httpsArgs,
 	})
-
-	return
+	if err != nil {
+		return err
+	}
+	return libkb.MerkleCheckPostedUserSig(m, me.GetUID(), e.untrackStatement.Seqno, linkID)
 }

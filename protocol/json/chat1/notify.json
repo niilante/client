@@ -2,12 +2,20 @@
   "protocol": "NotifyChat",
   "imports": [
     {
-      "path": "github.com/keybase/client/go/protocol/keybase1",
+      "path": "../keybase1",
       "type": "idl",
       "import_as": "keybase1"
     }
   ],
   "types": [
+    {
+      "type": "enum",
+      "name": "ChatActivitySource",
+      "symbols": [
+        "LOCAL_0",
+        "REMOTE_1"
+      ]
+    },
     {
       "type": "enum",
       "name": "ChatActivityType",
@@ -17,7 +25,14 @@
         "READ_MESSAGE_2",
         "NEW_CONVERSATION_3",
         "SET_STATUS_4",
-        "FAILED_MESSAGE_5"
+        "FAILED_MESSAGE_5",
+        "MEMBERS_UPDATE_6",
+        "SET_APP_NOTIFICATION_SETTINGS_7",
+        "TEAMTYPE_8",
+        "EXPUNGE_9",
+        "EPHEMERAL_PURGE_10",
+        "REACTION_UPDATE_11",
+        "MESSAGES_UPDATED_12"
       ]
     },
     {
@@ -25,24 +40,39 @@
       "name": "IncomingMessage",
       "fields": [
         {
-          "type": "MessageUnboxed",
+          "type": "UIMessage",
           "name": "message"
+        },
+        {
+          "type": [
+            null,
+            "UIMessage"
+          ],
+          "name": "modifiedMessage"
         },
         {
           "type": "ConversationID",
           "name": "convID"
         },
         {
+          "type": "boolean",
+          "name": "displayDesktopNotification"
+        },
+        {
+          "type": "string",
+          "name": "desktopNotificationSnippet"
+        },
+        {
           "type": [
             null,
-            "ConversationLocal"
+            "InboxUIItem"
           ],
           "name": "conv"
         },
         {
           "type": [
             null,
-            "Pagination"
+            "UIPagination"
           ],
           "name": "pagination"
         }
@@ -63,7 +93,7 @@
         {
           "type": [
             null,
-            "ConversationLocal"
+            "InboxUIItem"
           ],
           "name": "conv"
         }
@@ -74,7 +104,14 @@
       "name": "NewConversationInfo",
       "fields": [
         {
-          "type": "ConversationLocal",
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": [
+            null,
+            "InboxUIItem"
+          ],
           "name": "conv"
         }
       ]
@@ -94,9 +131,23 @@
         {
           "type": [
             null,
-            "ConversationLocal"
+            "InboxUIItem"
           ],
           "name": "conv"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "SetAppNotificationSettingsInfo",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "ConversationNotificationInfo",
+          "name": "settings"
         }
       ]
     },
@@ -110,6 +161,152 @@
             "items": "OutboxRecord"
           },
           "name": "outboxRecords"
+        },
+        {
+          "type": "boolean",
+          "name": "isEphemeralPurge"
+        },
+        {
+          "type": [
+            null,
+            "InboxUIItem"
+          ],
+          "name": "conv"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "MemberInfo",
+      "fields": [
+        {
+          "type": "string",
+          "name": "member"
+        },
+        {
+          "type": "ConversationMemberStatus",
+          "name": "status"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "MembersUpdateInfo",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "MemberInfo"
+          },
+          "name": "members"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "TeamTypeInfo",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "TeamType",
+          "name": "teamType"
+        },
+        {
+          "type": [
+            null,
+            "InboxUIItem"
+          ],
+          "name": "conv"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ExpungeInfo",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "Expunge",
+          "name": "expunge"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "EphemeralPurgeNotifInfo",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "UIMessage"
+          },
+          "name": "msgs"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ReactionUpdate",
+      "fields": [
+        {
+          "type": "ReactionMap",
+          "name": "reactions"
+        },
+        {
+          "type": "MessageID",
+          "name": "targetMsgID"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ReactionUpdateNotif",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "keybase1.UserReacjis",
+          "name": "userReacjis"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "ReactionUpdate"
+          },
+          "name": "reactionUpdates"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "MessagesUpdated",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "UIMessage"
+          },
+          "name": "updates"
         }
       ]
     },
@@ -155,6 +352,185 @@
             "def": false
           },
           "body": "FailedMessageInfo"
+        },
+        {
+          "label": {
+            "name": "MEMBERS_UPDATE",
+            "def": false
+          },
+          "body": "MembersUpdateInfo"
+        },
+        {
+          "label": {
+            "name": "SET_APP_NOTIFICATION_SETTINGS",
+            "def": false
+          },
+          "body": "SetAppNotificationSettingsInfo"
+        },
+        {
+          "label": {
+            "name": "TEAMTYPE",
+            "def": false
+          },
+          "body": "TeamTypeInfo"
+        },
+        {
+          "label": {
+            "name": "EXPUNGE",
+            "def": false
+          },
+          "body": "ExpungeInfo"
+        },
+        {
+          "label": {
+            "name": "EPHEMERAL_PURGE",
+            "def": false
+          },
+          "body": "EphemeralPurgeNotifInfo"
+        },
+        {
+          "label": {
+            "name": "REACTION_UPDATE",
+            "def": false
+          },
+          "body": "ReactionUpdateNotif"
+        },
+        {
+          "label": {
+            "name": "MESSAGES_UPDATED",
+            "def": false
+          },
+          "body": "MessagesUpdated"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "TyperInfo",
+      "fields": [
+        {
+          "type": "keybase1.UID",
+          "name": "uid"
+        },
+        {
+          "type": "string",
+          "name": "username"
+        },
+        {
+          "type": "keybase1.DeviceID",
+          "name": "deviceID"
+        },
+        {
+          "type": "string",
+          "name": "deviceName"
+        },
+        {
+          "type": "string",
+          "name": "deviceType"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ConvTypingUpdate",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "TyperInfo"
+          },
+          "name": "typers"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "StaleUpdateType",
+      "symbols": [
+        "CLEAR_0",
+        "NEWACTIVITY_1"
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ConversationStaleUpdate",
+      "fields": [
+        {
+          "type": "ConversationID",
+          "name": "convID"
+        },
+        {
+          "type": "StaleUpdateType",
+          "name": "updateType"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ChatSyncIncrementalConv",
+      "fields": [
+        {
+          "type": "UnverifiedInboxUIItem",
+          "name": "conv"
+        },
+        {
+          "type": "boolean",
+          "name": "shouldUnbox"
+        }
+      ]
+    },
+    {
+      "type": "record",
+      "name": "ChatSyncIncrementalInfo",
+      "fields": [
+        {
+          "type": {
+            "type": "array",
+            "items": "ChatSyncIncrementalConv"
+          },
+          "name": "items"
+        },
+        {
+          "type": {
+            "type": "array",
+            "items": "string"
+          },
+          "name": "removals"
+        }
+      ]
+    },
+    {
+      "type": "variant",
+      "name": "ChatSyncResult",
+      "switch": {
+        "type": "SyncInboxResType",
+        "name": "syncType"
+      },
+      "cases": [
+        {
+          "label": {
+            "name": "CURRENT",
+            "def": false
+          },
+          "body": null
+        },
+        {
+          "label": {
+            "name": "CLEAR",
+            "def": false
+          },
+          "body": null
+        },
+        {
+          "label": {
+            "name": "INCREMENTAL",
+            "def": false
+          },
+          "body": "ChatSyncIncrementalInfo"
         }
       ]
     }
@@ -169,6 +545,10 @@
         {
           "name": "activity",
           "type": "ChatActivity"
+        },
+        {
+          "name": "source",
+          "type": "ChatActivitySource"
         }
       ],
       "response": null,
@@ -204,7 +584,7 @@
           "name": "conv",
           "type": [
             null,
-            "ConversationLocal"
+            "InboxUIItem"
           ]
         }
       ],
@@ -249,11 +629,339 @@
           "type": "keybase1.UID"
         },
         {
-          "name": "convIDs",
+          "name": "updates",
           "type": {
             "type": "array",
-            "items": "ConversationID"
+            "items": "ConversationStaleUpdate"
           }
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatTypingUpdate": {
+      "request": [
+        {
+          "name": "typingUpdates",
+          "type": {
+            "type": "array",
+            "items": "ConvTypingUpdate"
+          }
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatJoinedConversation": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "conv",
+          "type": [
+            null,
+            "InboxUIItem"
+          ]
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatLeftConversation": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatResetConversation": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatInboxSyncStarted": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatInboxSynced": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "syncRes",
+          "type": "ChatSyncResult"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatSetConvRetention": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "conv",
+          "type": [
+            null,
+            "InboxUIItem"
+          ]
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatSetTeamRetention": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "teamID",
+          "type": "keybase1.TeamID"
+        },
+        {
+          "name": "convs",
+          "type": {
+            "type": "array",
+            "items": "InboxUIItem"
+          }
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatSetConvSettings": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "conv",
+          "type": [
+            null,
+            "InboxUIItem"
+          ]
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatSubteamRename": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convs",
+          "type": {
+            "type": "array",
+            "items": "InboxUIItem"
+          }
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatKBFSToImpteamUpgrade": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatAttachmentUploadStart": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "outboxID",
+          "type": "OutboxID"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatAttachmentUploadProgress": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "outboxID",
+          "type": "OutboxID"
+        },
+        {
+          "name": "bytesComplete",
+          "type": "long"
+        },
+        {
+          "name": "bytesTotal",
+          "type": "long"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatPaymentInfo": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "msgID",
+          "type": "MessageID"
+        },
+        {
+          "name": "info",
+          "type": "UIPaymentInfo"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatRequestInfo": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "msgID",
+          "type": "MessageID"
+        },
+        {
+          "name": "info",
+          "type": "UIRequestInfo"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatPromptUnfurl": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "msgID",
+          "type": "MessageID"
+        },
+        {
+          "name": "domain",
+          "type": "string"
+        }
+      ],
+      "response": null,
+      "notify": "",
+      "lint": "ignore"
+    },
+    "ChatConvUpdate": {
+      "request": [
+        {
+          "name": "uid",
+          "type": "keybase1.UID"
+        },
+        {
+          "name": "convID",
+          "type": "ConversationID"
+        },
+        {
+          "name": "conv",
+          "type": [
+            null,
+            "InboxUIItem"
+          ]
         }
       ],
       "response": null,

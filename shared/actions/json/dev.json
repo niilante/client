@@ -1,0 +1,11 @@
+{
+  "prelude": [],
+  "actions": {
+    "updateDebugConfig": {
+      "dumbFilter": "string",
+      "dumbFullscreen": "boolean",
+      "dumbIndex": "number"
+    },
+    "debugCount": {}
+  }
+}

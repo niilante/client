@@ -5,13 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 
+	"github.com/keybase/client/go/kbnm/installer"
 	"github.com/qrtz/nativemessaging"
 )
 
 // internalVersion is the logical version of this code (rather than build).
-const internalVersion = "1.3"
+const internalVersion = "1.4.1"
 
 // Version is the build version of kbnm, overwritten during build with metadata.
 var Version = "dev"
@@ -50,15 +52,16 @@ func process(h *handler, in nativemessaging.JSONDecoder, out nativemessaging.JSO
 		resp.Result, err = h.Handle(&req)
 	}
 
-	if err == io.EOF {
-		// Closed
-		return err
-	} else if err != nil {
-		resp.Status = "error"
-		resp.Message = err.Error()
-	} else {
+	switch err {
+	case nil:
 		// Success
 		resp.Status = "ok"
+	case io.EOF:
+		// Closed
+		return err
+	default:
+		resp.Status = "error"
+		resp.Message = err.Error()
 	}
 	resp.Client = req.Client
 
@@ -72,12 +75,35 @@ func process(h *handler, in nativemessaging.JSONDecoder, out nativemessaging.JSO
 	return abortErr
 }
 
+func exit(code int, msg string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, msg+"\n", a...)
+	os.Exit(code)
+}
+
 func main() {
 	flag.Parse()
 
 	if *versionFlag {
 		fmt.Printf("%s-%s\n", internalVersion, Version)
 		os.Exit(0)
+	}
+
+	switch flag.Arg(0) {
+	case "install":
+		kbnmPath, err := findKeybaseBinary(kbnmBinary)
+		if err != nil {
+			exit(2, "error finding kbnm binary: %s", err)
+		}
+		log.Print("installing: ", kbnmPath)
+		if err := installer.InstallKBNM(kbnmPath); err != nil {
+			exit(2, "error installing kbnm whitelist: %s", err)
+		}
+		exit(0, "Installed NativeMessaging whitelists.")
+	case "uninstall":
+		if err := installer.UninstallKBNM(); err != nil {
+			exit(2, "error uninstalling kbnm whitelist: %s", err)
+		}
+		exit(0, "Uninstalled NativeMessaging whitelists.")
 	}
 
 	// Native messages include a prefix which describes the length of each message.
@@ -94,7 +120,7 @@ func main() {
 		out = nativemessaging.NewNativeJSONEncoder(os.Stdout)
 	}
 
-	h := Handler()
+	h := newHandler()
 
 	for {
 		err := process(h, in, out)
@@ -103,8 +129,7 @@ func main() {
 			break
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s", err)
-			os.Exit(1)
+			exit(1, "stream processing error: %s", err)
 		}
 	}
 }

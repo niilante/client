@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/keybase/client/go/kbcrypto"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 	"github.com/keybase/go-crypto/openpgp"
 	"github.com/keybase/go-crypto/openpgp/armor"
@@ -57,18 +58,23 @@ const (
 
 type PGPFingerprint [PGPFingerprintLen]byte
 
+func ImportPGPFingerprint(f keybase1.PGPFingerprint) PGPFingerprint {
+	var ret PGPFingerprint
+	copy(ret[:], f[:])
+	return ret
+}
+
 func PGPFingerprintFromHex(s string) (*PGPFingerprint, error) {
 	var fp PGPFingerprint
-	n, err := hex.Decode([]byte(fp[:]), []byte(s))
-	var ret *PGPFingerprint
-	if err != nil {
-		// Noop
-	} else if n != PGPFingerprintLen {
-		err = fmt.Errorf("Bad fingerprint; wrong length: %d", n)
-	} else {
-		ret = &fp
+	err := DecodeHexFixed(fp[:], []byte(s))
+	switch err.(type) {
+	case nil:
+		return &fp, nil
+	case HexWrongLengthError:
+		return nil, fmt.Errorf("Bad fingerprint; wrong length: %d", len(s))
+	default:
+		return nil, err
 	}
-	return ret, err
 }
 
 func PGPFingerprintFromSlice(b []byte) (*PGPFingerprint, error) {
@@ -172,7 +178,7 @@ func (k *PGPKeyBundle) StripRevocations() (strippedKey *PGPKeyBundle) {
 	strippedKey.Subkeys = nil
 	for _, subkey := range oldSubkeys {
 		// Skip revoked subkeys
-		if subkey.Sig.SigType == packet.SigTypeSubkeyBinding {
+		if subkey.Sig.SigType == packet.SigTypeSubkeyBinding && subkey.Revocation == nil {
 			strippedKey.Subkeys = append(strippedKey.Subkeys, subkey)
 		}
 	}
@@ -224,7 +230,7 @@ func (p *PGPFingerprint) MarshalJSON() ([]byte, error) {
 }
 
 func (k PGPKeyBundle) toList() openpgp.EntityList {
-	list := make(openpgp.EntityList, 1, 1)
+	list := make(openpgp.EntityList, 1)
 	list[0] = k.Entity
 	return list
 }
@@ -275,7 +281,7 @@ func (k *PGPKeyBundle) Encode() (ret string, err error) {
 	buf := bytes.Buffer{}
 	err = k.EncodeToStream(NopWriteCloser{&buf}, false)
 	if err == nil {
-		ret = string(buf.Bytes())
+		ret = buf.String()
 		k.ArmoredPublicKey = ret
 	}
 	return
@@ -335,6 +341,7 @@ func (k *PGPKeyBundle) EncodeToStream(wc io.WriteCloser, private bool) error {
 }
 
 var cleanPGPInputRxx = regexp.MustCompile(`[ \t\r]*\n[ \t\r]*`)
+var bug8612PrepassRxx = regexp.MustCompile(`^(?P<header>-{5}BEGIN PGP (.*?)-{5})(\s*(?P<junk>.+?))$`)
 
 func cleanPGPInput(s string) string {
 	s = strings.TrimSpace(s)
@@ -346,7 +353,44 @@ func cleanPGPInput(s string) string {
 // note:  openpgp.ReadArmoredKeyRing only returns the first block.
 // It will never return multiple entities.
 func ReadOneKeyFromString(originalArmor string) (*PGPKeyBundle, *Warnings, error) {
+	return readOneKeyFromString(originalArmor, false /* liberal */)
+}
+
+// bug8612Prepass cleans off any garbage trailing the "-----" in the first line of a PGP
+// key. For years, the server allowed this junk through, so some keys on the server side
+// (and hashed into chains) have junk here. It's pretty safe to strip it out when replaying
+// sigchains, so do it.
+func bug8612Prepass(a string) string {
+	idx := strings.Index(a, "\n")
+	if idx < 0 {
+		return a
+	}
+	line0 := a[0:idx]
+	rest := a[idx:]
+	match := bug8612PrepassRxx.FindStringSubmatch(line0)
+	if len(match) == 0 {
+		return a
+	}
+	result := make(map[string]string)
+	for i, name := range bug8612PrepassRxx.SubexpNames() {
+		if i != 0 {
+			result[name] = match[i]
+		}
+	}
+	return result["header"] + rest
+}
+
+// note:  openpgp.ReadArmoredKeyRing only returns the first block.
+// It will never return multiple entities.
+func ReadOneKeyFromStringLiberal(originalArmor string) (*PGPKeyBundle, *Warnings, error) {
+	return readOneKeyFromString(originalArmor, true /* liberal */)
+}
+
+func readOneKeyFromString(originalArmor string, liberal bool) (*PGPKeyBundle, *Warnings, error) {
 	cleanArmor := cleanPGPInput(originalArmor)
+	if liberal {
+		cleanArmor = bug8612Prepass(cleanArmor)
+	}
 	reader := strings.NewReader(cleanArmor)
 	el, err := openpgp.ReadArmoredKeyRing(reader)
 	return finishReadOne(el, originalArmor, err)
@@ -520,17 +564,37 @@ func (k PGPKeyBundle) GetPrimaryUID() string {
 	return s
 }
 
+// HasSecretKey checks if the PGPKeyBundle contains secret key. This
+// function returning true does not indicate that the key is
+// functional - it may also be a key stub.
 func (k *PGPKeyBundle) HasSecretKey() bool {
 	return k.PrivateKey != nil
+}
+
+// FindPGPPrivateKey checks if supposed secret key PGPKeyBundle
+// contains any valid PrivateKey entities. Sometimes primary private
+// key is stoopped out but there are subkeys with secret keys.
+func FindPGPPrivateKey(k *PGPKeyBundle) bool {
+	if k.PrivateKey.PrivateKey != nil {
+		return true
+	}
+
+	for _, subKey := range k.Subkeys {
+		if subKey.PrivateKey != nil && subKey.PrivateKey.PrivateKey != nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (k *PGPKeyBundle) CheckSecretKey() (err error) {
 	if k.PrivateKey == nil {
 		err = NoSecretKeyError{}
 	} else if k.PrivateKey.Encrypted {
-		err = BadKeyError{"PGP key material should be unencrypted"}
-	} else if k.PrivateKey.PrivateKey == nil && k.GPGFallbackKey == nil {
-		err = BadKeyError{"no private key material or GPGKey"}
+		err = kbcrypto.BadKeyError{Msg: "PGP key material should be unencrypted"}
+	} else if !FindPGPPrivateKey(k) && k.GPGFallbackKey == nil {
+		err = kbcrypto.BadKeyError{Msg: "no private key material or GPGKey"}
 	}
 	return
 }
@@ -542,7 +606,7 @@ func (k *PGPKeyBundle) CanSign() bool {
 func (k *PGPKeyBundle) GetBinaryKID() keybase1.BinaryKID {
 
 	prefix := []byte{
-		byte(KeybaseKIDV1),
+		byte(kbcrypto.KeybaseKIDV1),
 		byte(k.PrimaryKey.PubKeyAlgo),
 	}
 
@@ -554,7 +618,7 @@ func (k *PGPKeyBundle) GetBinaryKID() keybase1.BinaryKID {
 	// have 9 bytes of header material, to encode a 2-byte frame, rather than
 	// a 1-byte frame.
 	buf := bytes.Buffer{}
-	k.PrimaryKey.Serialize(&buf)
+	_ = k.PrimaryKey.Serialize(&buf)
 	byts := buf.Bytes()
 	hdrBytes := 8
 	if len(byts) >= 193 {
@@ -563,7 +627,7 @@ func (k *PGPKeyBundle) GetBinaryKID() keybase1.BinaryKID {
 	sum := sha256.Sum256(buf.Bytes()[hdrBytes:])
 
 	out := append(prefix, sum[:]...)
-	out = append(out, byte(IDSuffixKID))
+	out = append(out, byte(kbcrypto.IDSuffixKID))
 
 	return keybase1.BinaryKID(out)
 }
@@ -572,8 +636,8 @@ func (k *PGPKeyBundle) GetKID() keybase1.KID {
 	return k.GetBinaryKID().ToKID()
 }
 
-func (k PGPKeyBundle) GetAlgoType() AlgoType {
-	return AlgoType(k.PrimaryKey.PubKeyAlgo)
+func (k PGPKeyBundle) GetAlgoType() kbcrypto.AlgoType {
+	return kbcrypto.AlgoType(k.PrimaryKey.PubKeyAlgo)
 }
 
 func (k PGPKeyBundle) KeyDescription() string {
@@ -649,9 +713,9 @@ func (k *PGPKeyBundle) unlockAllPrivateKeys(pw string) error {
 	return nil
 }
 
-func (k *PGPKeyBundle) Unlock(g *GlobalContext, reason string, secretUI SecretUI) error {
+func (k *PGPKeyBundle) Unlock(m MetaContext, reason string, secretUI SecretUI) error {
 	if !k.isAnyKeyEncrypted() {
-		g.Log.Debug("Key is not encrypted, skipping Unlock.")
+		m.Debug("Key is not encrypted, skipping Unlock.")
 		return nil
 	}
 
@@ -662,7 +726,7 @@ func (k *PGPKeyBundle) Unlock(g *GlobalContext, reason string, secretUI SecretUI
 		return k, nil
 	}
 
-	_, err := NewKeyUnlocker(g, 5, reason, k.VerboseDescription(), PassphraseTypePGP, false, secretUI, unlocker).Run()
+	_, err := NewKeyUnlocker(5, reason, k.VerboseDescription(), PassphraseTypePGP, false, secretUI, unlocker).Run(m)
 	return err
 }
 
@@ -714,9 +778,9 @@ func (k PGPKeyBundle) VerifyString(ctx VerifyContext, sig string, msg []byte) (i
 	return
 }
 
-func IsPGPAlgo(algo AlgoType) bool {
+func IsPGPAlgo(algo kbcrypto.AlgoType) bool {
 	switch algo {
-	case KIDPGPRsa, KIDPGPElgamal, KIDPGPDsa, KIDPGPEcdh, KIDPGPEcdsa, KIDPGPBase, KIDPGPEddsa:
+	case kbcrypto.KIDPGPRsa, kbcrypto.KIDPGPElgamal, kbcrypto.KIDPGPDsa, kbcrypto.KIDPGPEcdh, kbcrypto.KIDPGPEcdsa, kbcrypto.KIDPGPBase, kbcrypto.KIDPGPEddsa:
 		return true
 	}
 	return false
@@ -855,3 +919,27 @@ func (p PGPFingerprint) GetProofType() keybase1.ProofType {
 }
 
 //===================================================
+
+func EncryptPGPKey(bundle *openpgp.Entity, passphrase string) error {
+	passBytes := []byte(passphrase)
+
+	if bundle.PrivateKey != nil && bundle.PrivateKey.PrivateKey != nil {
+		// Primary private key exists and is not stubbed.
+		if err := bundle.PrivateKey.Encrypt(passBytes, nil); err != nil {
+			return err
+		}
+	}
+
+	for _, subkey := range bundle.Subkeys {
+		if subkey.PrivateKey == nil || subkey.PrivateKey.PrivateKey == nil {
+			// There has to be a private key and not stubbed.
+			continue
+		}
+
+		if err := subkey.PrivateKey.Encrypt(passBytes, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

@@ -5,4 +5,8 @@ protocol NotifyUsers {
 
   @notify("")
   void userChanged(UID uid);
+
+  void passwordChanged(PassphraseState state) oneway;
+
+  void identifyUpdate(array<string> okUsernames, array<string> brokenUsernames) oneway;
 }

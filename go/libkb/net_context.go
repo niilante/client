@@ -2,14 +2,19 @@ package libkb
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/keybase/client/go/logger"
 	"golang.org/x/net/context"
-	"strings"
 )
 
 type withLogTagKey string
 
 func WithLogTag(ctx context.Context, k string) context.Context {
+	return WithLogTagWithValue(ctx, k, RandStringB64(3))
+}
+
+func WithLogTagWithValue(ctx context.Context, k, v string) context.Context {
 	ctx = logger.ConvertRPCTagsToLogTags(ctx)
 
 	addLogTags := true
@@ -27,9 +32,10 @@ func WithLogTag(ctx context.Context, k string) context.Context {
 		ctx = logger.NewContextWithLogTags(ctx, newTags)
 	}
 
-	if _, found := ctx.Value(tagKey).(withLogTagKey); !found {
-		tag := RandStringB64(3)
-		ctx = context.WithValue(ctx, tagKey, tag)
+	// Only add a new FOO=abcdDE333EX log tag if one didn't
+	// already exist in this context.
+	if _, found := ctx.Value(tagKey).(string); !found {
+		ctx = context.WithValue(ctx, tagKey, v)
 	}
 	return ctx
 }

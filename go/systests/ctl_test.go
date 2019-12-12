@@ -10,7 +10,9 @@ import (
 
 	"github.com/keybase/client/go/client"
 	"github.com/keybase/client/go/libkb"
+	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 	"github.com/keybase/client/go/service"
+	context "golang.org/x/net/context"
 )
 
 func (v *versionUI) GetDumbOutputUI() libkb.DumbOutputUI {
@@ -18,6 +20,10 @@ func (v *versionUI) GetDumbOutputUI() libkb.DumbOutputUI {
 }
 
 func (v *versionUI) Printf(format string, args ...interface{}) (n int, err error) {
+	return v.PrintfUnescaped(format, args...)
+}
+
+func (v *versionUI) PrintfUnescaped(format string, args ...interface{}) (n int, err error) {
 	v.outbuf = append(v.outbuf, fmt.Sprintf(format, args...))
 	return 0, nil
 }
@@ -33,7 +39,7 @@ type versionUI struct {
 }
 
 func (v *versionUI) checkVersionOutput(t *testing.T) {
-	rx := regexp.MustCompile(":\\s*")
+	rx := regexp.MustCompile(`:\s*`)
 	n := len(v.outbuf)
 	if n < 2 {
 		t.Fatalf("expected >= 2 lines of output; got %d\n", n)
@@ -69,6 +75,7 @@ func TestVersionAndStop(t *testing.T) {
 	}()
 
 	tc2 := cloneContext(tc)
+	defer tc2.Cleanup()
 
 	vui := versionUI{
 		Contextified: libkb.NewContextified(tc2.G),
@@ -84,7 +91,7 @@ func TestVersionAndStop(t *testing.T) {
 
 	vui.checkVersionOutput(t)
 
-	if err := client.CtlServiceStop(tc2.G); err != nil {
+	if err := CtlStop(tc2.G); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,4 +99,16 @@ func TestVersionAndStop(t *testing.T) {
 	if err := <-stopCh; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func CtlStop(g *libkb.GlobalContext) error {
+	mctx := libkb.NewMetaContextTODO(g)
+	if err := g.Shutdown(mctx); err != nil {
+		return err
+	}
+	cli, err := client.GetCtlClient(g)
+	if err != nil {
+		return err
+	}
+	return cli.StopService(context.TODO(), keybase1.StopServiceArg{ExitCode: keybase1.ExitCode_OK})
 }

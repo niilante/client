@@ -81,19 +81,26 @@ func (g GPGUI) ConfirmDuplicateKeyChosen(_ context.Context, _ int) (bool, error)
 	return g.parent.PromptYesNo(PromptDescriptorGPGConfirmDuplicateKey, "You've already selected this public key for use on Keybase. Would you like to update it on Keybase?", libkb.PromptDefaultYes)
 }
 
+func (g GPGUI) ConfirmImportSecretToExistingKey(_ context.Context, _ int) (bool, error) {
+	if g.noPrompt {
+		return false, nil
+	}
+	return g.parent.PromptYesNo(PromptDescriptorGPGConfirmDuplicateKey, "Do you want to import secret half of this key to local Keybase keyring?", libkb.PromptDefaultYes)
+}
+
 func (g GPGUI) GetTTY(_ context.Context) (string, error) {
 	return g.tty, nil
 }
 
-func (g GPGUI) Sign(_ context.Context, arg keybase1.SignArg) (string, error) {
+func (g GPGUI) Sign(ctx context.Context, arg keybase1.SignArg) (string, error) {
 	fp, err := libkb.PGPFingerprintFromSlice(arg.Fingerprint)
 	if err != nil {
 		return "", err
 	}
 	cli := g.G().GetGpgClient()
-	if err := cli.Configure(); err != nil {
+	if err := cli.Configure(g.MetaContext(ctx)); err != nil {
 		return "", err
 	}
 	cli.SetTTY(g.tty)
-	return cli.Sign(*fp, arg.Msg)
+	return cli.Sign(g.MetaContext(ctx), *fp, arg.Msg)
 }

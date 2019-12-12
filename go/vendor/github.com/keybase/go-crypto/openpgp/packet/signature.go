@@ -10,6 +10,7 @@ import (
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"encoding/binary"
+	"fmt"
 	"hash"
 	"io"
 	"strconv"
@@ -42,6 +43,13 @@ type RevocationKey struct {
 	Class         byte
 	PublicKeyAlgo PublicKeyAlgorithm
 	Fingerprint   []byte
+}
+
+// KeyFlagBits holds boolean whether any usage flags were provided in
+// the signature and BitField with KeyFlag* flags.
+type KeyFlagBits struct {
+	Valid    bool
+	BitField byte
 }
 
 // Signature represents a signature. See RFC 4880, section 5.2.
@@ -377,18 +385,20 @@ func parseSignatureSubpacket(sig *Signature, subpacket []byte, isHashed bool) (r
 			err = errors.StructuralError("empty key flags subpacket")
 			return
 		}
-		sig.FlagsValid = true
-		if subpacket[0]&KeyFlagCertify != 0 {
-			sig.FlagCertify = true
-		}
-		if subpacket[0]&KeyFlagSign != 0 {
-			sig.FlagSign = true
-		}
-		if subpacket[0]&KeyFlagEncryptCommunications != 0 {
-			sig.FlagEncryptCommunications = true
-		}
-		if subpacket[0]&KeyFlagEncryptStorage != 0 {
-			sig.FlagEncryptStorage = true
+		if subpacket[0] != 0 {
+			sig.FlagsValid = true
+			if subpacket[0]&KeyFlagCertify != 0 {
+				sig.FlagCertify = true
+			}
+			if subpacket[0]&KeyFlagSign != 0 {
+				sig.FlagSign = true
+			}
+			if subpacket[0]&KeyFlagEncryptCommunications != 0 {
+				sig.FlagEncryptCommunications = true
+			}
+			if subpacket[0]&KeyFlagEncryptStorage != 0 {
+				sig.FlagEncryptStorage = true
+			}
 		}
 	case reasonForRevocationSubpacket:
 		// Reason For Revocation, section 5.2.3.23
@@ -617,6 +627,13 @@ func (sig *Signature) Sign(h hash.Hash, priv *PrivateKey, config *Config) (err e
 		return
 	}
 
+	// Parameter check, if this is wrong we will make a signature but
+	// not serialize it later.
+	if sig.PubKeyAlgo != priv.PubKeyAlgo {
+		err = errors.InvalidArgumentError("signature pub key algo does not match priv key")
+		return
+	}
+
 	switch priv.PubKeyAlgo {
 	case PubKeyAlgoRSA, PubKeyAlgoRSASignOnly:
 		sig.RSASignature.bytes, err = rsa.SignPKCS1v15(config.Random(), priv.PrivateKey.(*rsa.PrivateKey), sig.Hash, digest)
@@ -630,26 +647,29 @@ func (sig *Signature) Sign(h hash.Hash, priv *PrivateKey, config *Config) (err e
 			digest = digest[:subgroupSize]
 		}
 		r, s, err := dsa.Sign(config.Random(), dsaPriv, digest)
-		if err == nil {
-			sig.DSASigR.bytes = r.Bytes()
-			sig.DSASigR.bitLength = uint16(8 * len(sig.DSASigR.bytes))
-			sig.DSASigS.bytes = s.Bytes()
-			sig.DSASigS.bitLength = uint16(8 * len(sig.DSASigS.bytes))
+		if err != nil {
+			return err
 		}
+		sig.DSASigR.bytes = r.Bytes()
+		sig.DSASigR.bitLength = uint16(8 * len(sig.DSASigR.bytes))
+		sig.DSASigS.bytes = s.Bytes()
+		sig.DSASigS.bitLength = uint16(8 * len(sig.DSASigS.bytes))
 	case PubKeyAlgoECDSA:
 		r, s, err := ecdsa.Sign(config.Random(), priv.PrivateKey.(*ecdsa.PrivateKey), digest)
-		if err == nil {
-			sig.ECDSASigR = FromBig(r)
-			sig.ECDSASigS = FromBig(s)
+		if err != nil {
+			return err
 		}
+		sig.ECDSASigR = FromBig(r)
+		sig.ECDSASigS = FromBig(s)
 	case PubKeyAlgoEdDSA:
 		r, s, err := priv.PrivateKey.(*EdDSAPrivateKey).Sign(digest)
-		if err == nil {
-			sig.EdDSASigR = FromBytes(r)
-			sig.EdDSASigS = FromBytes(s)
+		if err != nil {
+			return err
 		}
+		sig.EdDSASigR = FromBytes(r)
+		sig.EdDSASigS = FromBytes(s)
 	default:
-		err = errors.UnsupportedError("public key algorithm: " + strconv.Itoa(int(sig.PubKeyAlgo)))
+		err = errors.UnsupportedError("public key algorithm for signing: " + strconv.Itoa(int(priv.PubKeyAlgo)))
 	}
 
 	return
@@ -695,6 +715,28 @@ func (sig *Signature) SignKeyWithSigner(signeePubKey *PublicKey, signerPubKey *P
 	updateKeySignatureHash(signerPubKey, signeePubKey, s)
 
 	return sig.Sign(s, nil, config)
+}
+
+// CrossSignKey creates PrimaryKeyBinding signature in sig.EmbeddedSignature by
+// signing `primary` key's hash using `priv` subkey private key. Primary public
+// key is the `signee` here.
+func (sig *Signature) CrossSignKey(primary *PublicKey, priv *PrivateKey, config *Config) error {
+	if len(sig.outSubpackets) > 0 {
+		return fmt.Errorf("outSubpackets already exists, looks like CrossSignKey was called after Sign")
+	}
+
+	sig.EmbeddedSignature = &Signature{
+		CreationTime: sig.CreationTime,
+		SigType:      SigTypePrimaryKeyBinding,
+		PubKeyAlgo:   priv.PubKeyAlgo,
+		Hash:         sig.Hash,
+	}
+
+	h, err := keySignatureHash(primary, &priv.PublicKey, sig.Hash)
+	if err != nil {
+		return err
+	}
+	return sig.EmbeddedSignature.Sign(h, priv, config)
 }
 
 // Serialize marshals sig to w. Sign, SignUserId or SignKey must have been
@@ -798,20 +840,7 @@ func (sig *Signature) buildSubpackets() (subpackets []outputSubpacket) {
 	// Key flags may only appear in self-signatures or certification signatures.
 
 	if sig.FlagsValid {
-		var flags byte
-		if sig.FlagCertify {
-			flags |= KeyFlagCertify
-		}
-		if sig.FlagSign {
-			flags |= KeyFlagSign
-		}
-		if sig.FlagEncryptCommunications {
-			flags |= KeyFlagEncryptCommunications
-		}
-		if sig.FlagEncryptStorage {
-			flags |= KeyFlagEncryptStorage
-		}
-		subpackets = append(subpackets, outputSubpacket{true, keyFlagsSubpacket, false, []byte{flags}})
+		subpackets = append(subpackets, outputSubpacket{true, keyFlagsSubpacket, false, []byte{sig.GetKeyFlags().BitField}})
 	}
 
 	// The following subpackets may only appear in self-signatures
@@ -838,5 +867,57 @@ func (sig *Signature) buildSubpackets() (subpackets []outputSubpacket) {
 		subpackets = append(subpackets, outputSubpacket{true, prefCompressionSubpacket, false, sig.PreferredCompression})
 	}
 
+	if sig.EmbeddedSignature != nil {
+		buf := bytes.NewBuffer(nil)
+		if err := sig.EmbeddedSignature.Serialize(buf); err == nil {
+			byteContent := buf.Bytes()[2:] // skip 2-byte length header
+			subpackets = append(subpackets, outputSubpacket{false, embeddedSignatureSubpacket, true, byteContent})
+		}
+	}
+
 	return
+}
+
+func (sig *Signature) GetKeyFlags() (ret KeyFlagBits) {
+	if !sig.FlagsValid {
+		return ret
+	}
+
+	ret.Valid = true
+	if sig.FlagCertify {
+		ret.BitField |= KeyFlagCertify
+	}
+	if sig.FlagSign {
+		ret.BitField |= KeyFlagSign
+	}
+	if sig.FlagEncryptCommunications {
+		ret.BitField |= KeyFlagEncryptCommunications
+	}
+	if sig.FlagEncryptStorage {
+		ret.BitField |= KeyFlagEncryptStorage
+	}
+	return ret
+}
+
+func (f *KeyFlagBits) HasFlagCertify() bool {
+	return f.BitField&KeyFlagCertify != 0
+}
+
+func (f *KeyFlagBits) HasFlagSign() bool {
+	return f.BitField&KeyFlagSign != 0
+}
+
+func (f *KeyFlagBits) HasFlagEncryptCommunications() bool {
+	return f.BitField&KeyFlagEncryptCommunications != 0
+}
+
+func (f *KeyFlagBits) HasFlagEncryptStorage() bool {
+	return f.BitField&KeyFlagEncryptStorage != 0
+}
+
+func (f *KeyFlagBits) Merge(other KeyFlagBits) {
+	if other.Valid {
+		f.Valid = true
+		f.BitField |= other.BitField
+	}
 }

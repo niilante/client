@@ -4,8 +4,10 @@
 package libkb
 
 import (
-	"golang.org/x/net/context"
 	"sync"
+	"time"
+
+	"golang.org/x/net/context"
 )
 
 type NamedLock struct {
@@ -34,12 +36,16 @@ func (l *NamedLock) Release(ctx context.Context) {
 		delete(l.parent.locks, l.name)
 	}
 	l.parent.Unlock()
-	l.lctx.GetLog().CDebugf(ctx, "- LockTable.Unlock(%s)", l.name)
+	l.lctx.GetVDebugLog().CLogf(ctx, VLog1, "- LockTable.Unlock(%s)", l.name)
 }
 
 type LockTable struct {
 	sync.Mutex
 	locks map[string]*NamedLock
+}
+
+func NewLockTable() *LockTable {
+	return &LockTable{}
 }
 
 func (t *LockTable) init() {
@@ -48,8 +54,10 @@ func (t *LockTable) init() {
 	}
 }
 
+// AcquireOnName acquires s's lock.
+// Never gives up.
 func (t *LockTable) AcquireOnName(ctx context.Context, g VLogContext, s string) (ret *NamedLock) {
-	g.GetLog().CDebugf(ctx, "+ LockTable.Lock(%s)", s)
+	g.GetVDebugLog().CLogf(ctx, VLog1, "+ LockTable.Lock(%s)", s)
 	t.Lock()
 	t.init()
 	if ret = t.locks[s]; ret == nil {
@@ -61,4 +69,39 @@ func (t *LockTable) AcquireOnName(ctx context.Context, g VLogContext, s string) 
 	ret.Lock()
 	g.GetVDebugLog().CLogf(ctx, VLog1, "- LockTable.Lock(%s)", s)
 	return ret
+}
+
+// AcquireOnNameWithContext acquires s's lock.
+// Returns (ret, nil) if the lock was acquired.
+// Returns (nil, err) if it was not. The error is from ctx.Err().
+func (t *LockTable) AcquireOnNameWithContext(ctx context.Context, g VLogContext, s string) (ret *NamedLock, err error) {
+	g.GetVDebugLog().CLogf(ctx, VLog1, "+ LockTable.Lock(%s)", s)
+	err = AcquireWithContext(ctx, t)
+	if err != nil {
+		g.GetVDebugLog().CLogf(ctx, VLog1, "- LockTable.Lock(%s) outer canceled: %v", s, err)
+		return nil, err
+	}
+	t.init()
+	if ret = t.locks[s]; ret == nil {
+		ret = &NamedLock{lctx: g, refs: 0, name: s, parent: t}
+		t.locks[s] = ret
+	}
+	ret.incref()
+	t.Unlock()
+	err = AcquireWithContext(ctx, ret)
+	if err != nil {
+		g.GetVDebugLog().CLogf(ctx, VLog1, "- LockTable.Lock(%s) inner canceled: %v", s, err)
+		return nil, err
+	}
+	g.GetVDebugLog().CLogf(ctx, VLog1, "- LockTable.Lock(%s)", s)
+	return ret, nil
+}
+
+// AcquireOnNameWithContextAndTimeout acquires s's lock.
+// Returns (ret, nil) if the lock was acquired.
+// Returns (nil, err) if it was not. The error is from ctx.Err() or context.DeadlineExceeded.
+func (t *LockTable) AcquireOnNameWithContextAndTimeout(ctx context.Context, g VLogContext, s string, timeout time.Duration) (ret *NamedLock, err error) {
+	ctx2, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return t.AcquireOnNameWithContext(ctx2, g, s)
 }

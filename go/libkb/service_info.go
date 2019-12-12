@@ -49,13 +49,30 @@ func (s ServiceInfo) WriteFile(path string, log logger.Logger) error {
 		return err
 	}
 
-	file := NewFile(path, []byte(out), 0644)
+	file := NewFile(path, out, 0644)
 	return file.Save(log)
 }
 
 // serviceLog is the log interface for ServiceInfo
 type serviceLog interface {
 	Debug(s string, args ...interface{})
+}
+
+func LoadServiceInfo(path string) (*ServiceInfo, error) {
+	if _, ferr := os.Stat(path); os.IsNotExist(ferr) {
+		return nil, nil
+	}
+	dat, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var serviceInfo ServiceInfo
+	err = json.Unmarshal(dat, &serviceInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	return &serviceInfo, nil
 }
 
 // WaitForServiceInfoFile tries to wait for a service info file, which should be
@@ -66,17 +83,12 @@ func WaitForServiceInfoFile(path string, label string, pid string, timeout time.
 	}
 
 	lookForServiceInfo := func() (*ServiceInfo, error) {
-		if _, ferr := os.Stat(path); os.IsNotExist(ferr) {
+		serviceInfo, err := LoadServiceInfo(path)
+		if err != nil {
+			return nil, err
+		}
+		if serviceInfo == nil {
 			return nil, nil
-		}
-		dat, err := ioutil.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		var serviceInfo ServiceInfo
-		err = json.Unmarshal(dat, &serviceInfo)
-		if err != nil {
-			return nil, err
 		}
 
 		// Make sure the info file is the pid we are waiting for, otherwise it is
@@ -86,11 +98,11 @@ func WaitForServiceInfoFile(path string, label string, pid string, timeout time.
 		}
 
 		// PIDs match, the service has started up
-		return &serviceInfo, nil
+		return serviceInfo, nil
 	}
 
 	log.Debug("Looking for service info file (timeout=%s)", timeout)
-	serviceInfo, err := waitForServiceInfo(timeout, time.Millisecond*400, lookForServiceInfo)
+	serviceInfo, err := waitForServiceInfo(timeout, time.Millisecond*100, lookForServiceInfo)
 
 	// If no service info was found, let's return an error
 	if serviceInfo == nil {
@@ -121,18 +133,15 @@ func waitForServiceInfo(timeout time.Duration, delay time.Duration, fn loadServi
 	defer ticker.Stop()
 	resultChan := make(chan serviceInfoResult, 1)
 	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				info, err := fn()
-				if err != nil {
-					resultChan <- serviceInfoResult{info: nil, err: err}
-					return
-				}
-				if info != nil {
-					resultChan <- serviceInfoResult{info: info, err: nil}
-					return
-				}
+		for range ticker.C {
+			info, err := fn()
+			if err != nil {
+				resultChan <- serviceInfoResult{info: nil, err: err}
+				return
+			}
+			if info != nil {
+				resultChan <- serviceInfoResult{info: info, err: nil}
+				return
 			}
 		}
 	}()

@@ -4,8 +4,10 @@
 package engine
 
 import (
-	"github.com/keybase/client/go/libkb"
 	"testing"
+
+	"github.com/keybase/client/go/kbcrypto"
+	"github.com/keybase/client/go/libkb"
 )
 
 func TestSecretKeys(t *testing.T) {
@@ -14,14 +16,15 @@ func TestSecretKeys(t *testing.T) {
 
 	u := CreateAndSignupFakeUser(tc, "sk")
 
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI:    tc.G.UI.GetLogUI(),
 		SecretUI: u.NewSecretUI(),
 	}
 
 	// Get the secret keys.
 	e := NewSecretKeysEngine(tc.G)
-	err := RunEngine(e, ctx)
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err := RunEngine2(m, e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,16 +36,14 @@ func TestSecretKeys(t *testing.T) {
 
 	// Build the signing keypair. To do this, we exploit the fact that a NaCl
 	// public signing key is the last 32 bytes of the private signing key.
-	var public libkb.NaclSigningKeyPublic
+	var public kbcrypto.NaclSigningKeyPublic
 	copy(public[:], signing[32:])
 	pair := libkb.NaclSigningKeyPair{
 		Public: public,
 	}
 
 	// Check the signing keypair's KID is in the user's KeyFamily.
-	testUser, err := libkb.LoadUser(libkb.LoadUserArg{
-		Name: u.Username,
-	})
+	testUser, err := libkb.LoadUser(libkb.NewLoadUserArg(tc.G).WithName(u.Username))
 	if err != nil {
 		t.Fatal(err)
 	}

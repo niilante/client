@@ -20,18 +20,12 @@ type flakeyRooterAPI struct {
 	G        *libkb.GlobalContext
 }
 
-func newFlakeyRooterAPI(x libkb.ExternalAPI) *flakeyRooterAPI {
-	return &flakeyRooterAPI{
-		orig: x,
-	}
-}
-
-func (e *flakeyRooterAPI) GetText(arg libkb.APIArg) (*libkb.ExternalTextRes, error) {
+func (e *flakeyRooterAPI) GetText(m libkb.MetaContext, arg libkb.APIArg) (*libkb.ExternalTextRes, error) {
 	e.G.Log.Debug("| flakeyRooterAPI.GetText, hard = %v, flake = %v", e.hardFail, e.flakeOut)
-	return e.orig.GetText(arg)
+	return e.orig.GetText(m, arg)
 }
 
-func (e *flakeyRooterAPI) Get(arg libkb.APIArg) (res *libkb.ExternalAPIRes, err error) {
+func (e *flakeyRooterAPI) Get(m libkb.MetaContext, arg libkb.APIArg) (res *libkb.ExternalAPIRes, err error) {
 	e.G.Log.Debug("| flakeyRooterAPI.Get, hard = %v, flake = %v", e.hardFail, e.flakeOut)
 	// Show an error if we're in flakey mode
 	if strings.Contains(arg.Endpoint, "rooter") {
@@ -43,31 +37,30 @@ func (e *flakeyRooterAPI) Get(arg libkb.APIArg) (res *libkb.ExternalAPIRes, err 
 		}
 	}
 
-	return e.orig.Get(arg)
+	return e.orig.Get(m, arg)
 }
 
-func (e *flakeyRooterAPI) GetHTML(arg libkb.APIArg) (res *libkb.ExternalHTMLRes, err error) {
+func (e *flakeyRooterAPI) GetHTML(m libkb.MetaContext, arg libkb.APIArg) (res *libkb.ExternalHTMLRes, err error) {
 	e.G.Log.Debug("| flakeyRooterAPI.GetHTML, hard = %v, flake = %v", e.hardFail, e.flakeOut)
-	return e.orig.GetHTML(arg)
+	return e.orig.GetHTML(m, arg)
 }
 
-func (e *flakeyRooterAPI) Post(arg libkb.APIArg) (res *libkb.ExternalAPIRes, err error) {
-	return e.orig.Post(arg)
+func (e *flakeyRooterAPI) Post(m libkb.MetaContext, arg libkb.APIArg) (res *libkb.ExternalAPIRes, err error) {
+	return e.orig.Post(m, arg)
 }
 
-func (e *flakeyRooterAPI) PostHTML(arg libkb.APIArg) (res *libkb.ExternalHTMLRes, err error) {
-	return e.orig.PostHTML(arg)
+func (e *flakeyRooterAPI) PostHTML(m libkb.MetaContext, arg libkb.APIArg) (res *libkb.ExternalHTMLRes, err error) {
+	return e.orig.PostHTML(m, arg)
 }
 
 func TestSoftSnooze(t *testing.T) {
 	tc := SetupEngineTest(t, "track")
 	defer tc.Cleanup()
-	fu := CreateAndSignupFakeUser(tc, "track")
+	sigVersion := libkb.GetDefaultSigVersion(tc.G)
 
 	fakeClock := clockwork.NewFakeClockAt(time.Now())
 	tc.G.SetClock(fakeClock)
-	// to pick up the new clock...
-	tc.G.ResetLoginState()
+	fu := CreateAndSignupFakeUser(tc, "track")
 
 	flakeyAPI := flakeyRooterAPI{orig: tc.G.XAPI, flakeOut: false, G: tc.G}
 	tc.G.XAPI = &flakeyAPI
@@ -75,37 +68,39 @@ func TestSoftSnooze(t *testing.T) {
 	idUI := &FakeIdentifyUI{}
 	username := "t_tracy"
 	arg := &keybase1.Identify2Arg{
-		UserAssertion: username,
-		NeedProofSet:  true,
+		UserAssertion:    username,
+		NeedProofSet:     true,
+		IdentifyBehavior: keybase1.TLFIdentifyBehavior_CLI,
 	}
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI:      tc.G.UI.GetLogUI(),
 		IdentifyUI: idUI,
 		SecretUI:   fu.NewSecretUI(),
 	}
-
 	// Identify tracy; all proofs should work
 	eng := NewResolveThenIdentify2(tc.G, arg)
-	if err := RunEngine(eng, ctx); err != nil {
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	if err := RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
+	sv := keybase1.SigVersion(sigVersion)
 	targ := TrackTokenArg{
 		Token:   idUI.Token,
-		Options: keybase1.TrackOptions{BypassConfirm: true},
+		Options: keybase1.TrackOptions{BypassConfirm: true, SigVersion: &sv},
 	}
 
 	// Track tracy
-	teng := NewTrackToken(&targ, tc.G)
-	if err := RunEngine(teng, ctx); err != nil {
+	teng := NewTrackToken(tc.G, &targ)
+	if err := RunEngine2(m, teng); err != nil {
 		t.Fatal(err)
 	}
 
-	defer runUntrack(tc.G, fu, username)
+	defer func() { _ = runUntrack(tc, fu, username, sigVersion) }()
 
 	// Now make her Rooter proof flakey / fail with a 429
 	flakeyAPI.flakeOut = true
 	idUI = &FakeIdentifyUI{}
-	ctx.IdentifyUI = idUI
+	m = m.WithIdentifyUI(idUI)
 
 	// Advance so that our previous cached success is out of
 	// cache on its own, but still can override a 429-like soft failure.
@@ -114,7 +109,7 @@ func TestSoftSnooze(t *testing.T) {
 	eng = NewResolveThenIdentify2(tc.G, arg)
 	eng.testArgs = &Identify2WithUIDTestArgs{noCache: true}
 	// Should not get an error
-	if err := RunEngine(eng, ctx); err != nil {
+	if err := RunEngine2(m, eng); err != nil {
 		t.Fatal(err)
 	}
 	result, found := idUI.ProofResults["rooter"]
@@ -131,8 +126,8 @@ func TestSoftSnooze(t *testing.T) {
 	eng = NewResolveThenIdentify2(tc.G, arg)
 	eng.testArgs = &Identify2WithUIDTestArgs{noCache: true}
 	idUI = &FakeIdentifyUI{}
-	ctx.IdentifyUI = idUI
-	if err := RunEngine(eng, ctx); err == nil {
+	m = m.WithIdentifyUI(idUI)
+	if err := RunEngine2(m, eng); err == nil {
 		t.Fatal("Expected a failure in our proof")
 	}
 

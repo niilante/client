@@ -21,7 +21,7 @@ type reachabilityHandler struct {
 
 func newReachabilityHandler(xp rpc.Transporter, g *libkb.GlobalContext, reachability *reachability) *reachabilityHandler {
 	return &reachabilityHandler{
-		BaseHandler:  NewBaseHandler(xp),
+		BaseHandler:  NewBaseHandler(g, xp),
 		Contextified: libkb.NewContextified(g),
 		reachability: reachability,
 	}
@@ -61,13 +61,14 @@ func newReachability(g *libkb.GlobalContext, gh *gregorHandler) *reachability {
 
 func (h *reachability) setReachability(r keybase1.Reachability) {
 	h.setMutex.Lock()
-	defer h.setMutex.Unlock()
+	changed := h.lastReachability.Reachable != r.Reachable
+	h.lastReachability = r
+	h.setMutex.Unlock()
 
-	if h.lastReachability.Reachable != r.Reachable {
+	if changed {
 		h.G().Log.Debug("Reachability changed: %#v", r)
 		h.G().NotifyRouter.HandleReachability(r)
 	}
-	h.lastReachability = r
 }
 
 func (h *reachability) check() (k keybase1.Reachability) {
@@ -82,6 +83,9 @@ func (h *reachability) check() (k keybase1.Reachability) {
 }
 
 func (h *reachability) IsConnected(ctx context.Context) libkb.ConnectivityMonitorResult {
+	h.setMutex.Lock()
+	defer h.setMutex.Unlock()
+
 	switch h.lastReachability.Reachable {
 	case keybase1.Reachable_YES:
 		return libkb.ConnectivityMonitorYes
@@ -90,4 +94,9 @@ func (h *reachability) IsConnected(ctx context.Context) libkb.ConnectivityMonito
 	default:
 		return libkb.ConnectivityMonitorUnknown
 	}
+}
+
+func (h *reachability) CheckReachability(ctx context.Context) error {
+	h.check()
+	return nil
 }

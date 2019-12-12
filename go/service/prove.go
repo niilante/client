@@ -4,6 +4,9 @@
 package service
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/keybase/client/go/engine"
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
@@ -26,7 +29,7 @@ type proveUI struct {
 // NewProveHandler makes a new ProveHandler object from an RPC transport.
 func NewProveHandler(xp rpc.Transporter, g *libkb.GlobalContext) *ProveHandler {
 	return &ProveHandler{
-		BaseHandler:  NewBaseHandler(xp),
+		BaseHandler:  NewBaseHandler(g, xp),
 		Contextified: libkb.NewContextified(g),
 	}
 }
@@ -55,6 +58,13 @@ func (p *proveUI) OkToCheck(ctx context.Context, arg keybase1.OkToCheckArg) (boo
 	arg.SessionID = p.sessionID
 	return p.cli.OkToCheck(ctx, arg)
 }
+func (p *proveUI) Checking(ctx context.Context, arg keybase1.CheckingArg) error {
+	arg.SessionID = p.sessionID
+	return p.cli.Checking(ctx, arg)
+}
+func (p *proveUI) ContinueChecking(ctx context.Context, _ int) (bool, error) {
+	return p.cli.ContinueChecking(ctx, p.sessionID)
+}
 func (p *proveUI) DisplayRecheckWarning(ctx context.Context, arg keybase1.DisplayRecheckWarningArg) error {
 	arg.SessionID = p.sessionID
 	return p.cli.DisplayRecheckWarning(ctx, arg)
@@ -65,30 +75,83 @@ func (ph *ProveHandler) getProveUI(sessionID int) libkb.ProveUI {
 }
 
 // Prove handles the `keybase.1.startProof` RPC.
-func (ph *ProveHandler) StartProof(_ context.Context, arg keybase1.StartProofArg) (res keybase1.StartProofResult, err error) {
-	eng := engine.NewProve(&arg, ph.G())
-	ctx := engine.Context{
+func (ph *ProveHandler) StartProof(ctx context.Context, arg keybase1.StartProofArg) (res keybase1.StartProofResult, err error) {
+	ctx = libkb.WithLogTag(ctx, "PV")
+	defer ph.G().CTraceTimed(ctx, fmt.Sprintf("StartProof: Service: %v, Username: %v", arg.Service, arg.Username), func() error { return err })()
+	eng := engine.NewProve(ph.G(), &arg)
+	uis := libkb.UIs{
 		ProveUI:   ph.getProveUI(arg.SessionID),
 		SecretUI:  ph.getSecretUI(arg.SessionID, ph.G()),
 		LogUI:     ph.getLogUI(arg.SessionID),
 		SessionID: arg.SessionID,
 	}
-	err = engine.RunEngine(eng, &ctx)
-	if err != nil {
+	m := libkb.NewMetaContext(ctx, ph.G()).WithUIs(uis)
+	if err = engine.RunEngine2(m, eng); err != nil {
 		return res, err
 	}
 	res.SigID = eng.SigID()
 	return res, err
 }
 
-func (ph *ProveHandler) CheckProof(_ context.Context, arg keybase1.CheckProofArg) (res keybase1.CheckProofStatus, err error) {
+func (ph *ProveHandler) ValidateUsername(ctx context.Context, arg keybase1.ValidateUsernameArg) error {
+	mctx := libkb.NewMetaContext(ctx, ph.G())
+	serviceType := mctx.G().GetProofServices().GetServiceType(ctx, arg.Service)
+	if serviceType == nil {
+		return libkb.BadServiceError{Service: arg.Service}
+	}
+	_, err := serviceType.NormalizeRemoteName(mctx, arg.Remotename)
+	return err
+}
+
+// Prove handles the `keybase.1.checkProof` RPC.
+func (ph *ProveHandler) CheckProof(ctx context.Context, arg keybase1.CheckProofArg) (res keybase1.CheckProofStatus, err error) {
+	ctx = libkb.WithLogTag(ctx, "PV")
+	defer ph.G().CTraceTimed(ctx, fmt.Sprintf("CheckProof: SigID: %v", arg.SigID), func() error { return err })()
 	eng := engine.NewProveCheck(ph.G(), arg.SigID)
-	ctx := &engine.Context{}
-	if err = engine.RunEngine(eng, ctx); err != nil {
-		return
+	m := libkb.NewMetaContext(ctx, ph.G())
+	if err = engine.RunEngine2(m, eng); err != nil {
+		return res, err
 	}
 	found, status, state, text := eng.Results()
-	res = keybase1.CheckProofStatus{Found: found, Status: status, State: state, ProofText: text}
+	return keybase1.CheckProofStatus{
+		Found:     found,
+		Status:    status,
+		State:     state,
+		ProofText: text,
+	}, nil
+}
 
-	return
+var choiceProofServices = map[string]int{
+	"twitter":         1,
+	"github":          2,
+	"reddit":          3,
+	"hackernews":      4,
+	"facebook":        5,
+	"web":             6,
+	"https":           7,
+	"http":            8,
+	"dns":             9,
+	"rooter":          10,
+	"mastodon.social": 11,
+}
+
+func (ph *ProveHandler) ListSomeProofServices(ctx context.Context) (res []string, err error) {
+	ctx = libkb.WithLogTag(ctx, "PV")
+	defer ph.G().CTraceTimed(ctx, fmt.Sprintf("ListSomeProofServices"), func() error { return err })()
+	mctx := libkb.NewMetaContext(ctx, ph.G())
+	var services []string
+	for _, service := range ph.G().GetProofServices().ListServicesThatAcceptNewProofs(mctx) {
+		if _, found := choiceProofServices[service]; found {
+			services = append(services, service)
+		}
+	}
+	sort.SliceStable(services, func(i, j int) bool { return choiceProofServices[services[i]] < choiceProofServices[services[j]] })
+	return services, nil
+}
+
+func (ph *ProveHandler) ListProofServices(ctx context.Context) (res []string, err error) {
+	ctx = libkb.WithLogTag(ctx, "PV")
+	defer ph.G().CTraceTimed(ctx, fmt.Sprintf("ListProofServices"), func() error { return err })()
+	mctx := libkb.NewMetaContext(ctx, ph.G())
+	return ph.G().GetProofServices().ListServicesThatAcceptNewProofs(mctx), nil
 }

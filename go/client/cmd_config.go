@@ -4,19 +4,28 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/keybase/cli"
 	"github.com/keybase/client/go/libcmdline"
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
+	jsonw "github.com/keybase/go-jsonw"
 	"golang.org/x/net/context"
 )
 
 type CmdConfigGet struct {
 	libkb.Contextified
-	Path string
+	Path          string
+	Direct        bool
+	Bare          bool
+	AssertTrue    bool
+	AssertFalse   bool
+	AssertOkOnNil bool
 }
 
 type CmdConfigSet struct {
@@ -31,6 +40,31 @@ type CmdConfigInfo struct {
 }
 
 func (v *CmdConfigGet) ParseArgv(ctx *cli.Context) error {
+	if ctx.Bool("direct") {
+		v.Direct = true
+	}
+	if ctx.Bool("bare") {
+		v.Bare = true
+	}
+	if ctx.Bool("assert-true") {
+		v.AssertTrue = true
+	}
+	if ctx.Bool("assert-false") {
+		v.AssertFalse = true
+	}
+	if v.AssertTrue && v.AssertFalse {
+		return fmt.Errorf("Cannot assert both true and false.")
+	}
+	if ctx.Bool("assert-ok-on-nil") {
+		v.AssertOkOnNil = true
+	}
+	if v.AssertOkOnNil && !(v.AssertTrue || v.AssertFalse) {
+		return fmt.Errorf("Must --assert-true or --assert-false to --assert-ok-on-nil.")
+	}
+	if (v.AssertTrue || v.AssertFalse) && !v.Direct {
+		return fmt.Errorf("Cannot --assert-true or --assert-false unless in --direct mode.")
+	}
+
 	if len(ctx.Args()) == 1 {
 		v.Path = ctx.Args()[0]
 	} else if len(ctx.Args()) > 1 {
@@ -69,6 +103,17 @@ func (v *CmdConfigSet) ParseArgv(ctx *cli.Context) error {
 		tmp := int(i)
 		v.Value.I = &tmp
 	}
+	if ctx.Bool("float") {
+		if len(args) <= 1 {
+			return fmt.Errorf("Missing float value argument")
+		}
+		flags++
+		f, err := strconv.ParseFloat(args[1], 64)
+		if err != nil {
+			return err
+		}
+		v.Value.F = &f
+	}
 	if ctx.Bool("bool") {
 		if len(args) <= 1 {
 			return fmt.Errorf("Missing bool value argument")
@@ -95,7 +140,7 @@ func (v *CmdConfigSet) ParseArgv(ctx *cli.Context) error {
 	}
 
 	if flags > 1 {
-		return fmt.Errorf("Can only specify one of -c, -n, -i, -b or -s")
+		return fmt.Errorf("Can only specify one of -c, -n, -i, -f, -b or -s")
 	}
 
 	if ctx.Bool("string") || flags == 0 {
@@ -126,7 +171,65 @@ func (v *CmdConfigInfo) ParseArgv(ctx *cli.Context) error {
 	return nil
 }
 
-func (v *CmdConfigGet) Run() error {
+func (v *CmdConfigGet) runDirect(dui libkb.DumbOutputUI) error {
+	config := v.G().Env.GetConfig()
+	i, err := config.GetInterfaceAtPath(v.Path)
+	if err != nil {
+		if v.AssertOkOnNil {
+			_, isJSONError := err.(*jsonw.Error)
+			isJSONNoSuchKeyError := isJSONError && strings.Contains(err.Error(), "no such key")
+			// Don't print a warning if the error is that the directory/file
+			// doesn't exist or the key is not in the file. Otherwise, e.g., if
+			// the permissions are incorrect or the config file contains
+			// malformed JSON, print a warning but still don't return an error.
+			if !(os.IsNotExist(err) || isJSONNoSuchKeyError) {
+				v.G().Log.Warning(fmt.Sprintf("Unexpected error while reading config %s; ignoring.", err))
+			}
+			return nil
+		}
+		return err
+	}
+	if i == nil {
+		dui.Printf("null\n")
+	} else {
+		switch val := i.(type) {
+		case int:
+			dui.Printf("%d\n", val)
+		case string:
+			if v.Bare {
+				dui.Printf("%s\n", val)
+			} else {
+				dui.Printf("%q\n", val)
+			}
+		case bool:
+			dui.Printf("%t\n", val)
+			if v.AssertTrue && !val {
+				return fmt.Errorf("Assertion failed.")
+			}
+			if v.AssertFalse && val {
+				return fmt.Errorf("Assertion failed.")
+			}
+		case float64:
+			dui.Printf("%d\n", int(val))
+		default:
+			var b []byte
+			b, err = json.Marshal(val)
+			if err != nil {
+				return err
+			}
+			dui.Printf("%s\n", string(b))
+		}
+
+		if v.AssertTrue || v.AssertFalse {
+			if _, ok := i.(bool); !ok {
+				return fmt.Errorf("Not a boolean.")
+			}
+		}
+	}
+	return nil
+}
+
+func (v *CmdConfigGet) runClient(dui libkb.DumbOutputUI) error {
 	cli, err := GetConfigClient(v.G())
 	if err != nil {
 		return err
@@ -136,21 +239,31 @@ func (v *CmdConfigGet) Run() error {
 	if err != nil {
 		return err
 	}
-	dui := v.G().UI.GetDumbOutputUI()
 	switch {
 	case val.IsNull:
 		dui.Printf("null\n")
 	case val.I != nil:
 		dui.Printf("%d\n", *val.I)
 	case val.S != nil:
-		dui.Printf("%q\n", *val.S)
+		if v.Bare {
+			dui.Printf("%s\n", *val.S)
+		} else {
+			dui.Printf("%q\n", *val.S)
+		}
 	case val.B != nil:
 		dui.Printf("%t\n", *val.B)
 	case val.O != nil:
 		dui.Printf("%s\n", *val.O)
 	}
-
 	return nil
+}
+
+func (v *CmdConfigGet) Run() error {
+	dui := v.G().UI.GetDumbOutputUI()
+	if v.Direct {
+		return v.runDirect(dui)
+	}
+	return v.runClient(dui)
 }
 
 func (v *CmdConfigSet) Run() error {
@@ -190,11 +303,37 @@ func NewCmdConfigGetRunner(g *libkb.GlobalContext) *CmdConfigGet {
 
 func NewCmdConfigGet(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Command {
 	return cli.Command{
-		Name:         "get",
-		Usage:        "Get a config value",
+		Name:  "get",
+		Usage: "Get a config value",
+		Flags: []cli.Flag{
+			cli.BoolFlag{
+				Name:  "d, direct",
+				Usage: "Read the config value directly from the config file, without consulting the service",
+			},
+			cli.BoolFlag{
+				Name:  "b, bare",
+				Usage: "Print string values without enclosing, JSON-style quotes",
+			},
+			cli.BoolFlag{
+				Name:  "assert-true",
+				Usage: "Returns 0 exit code iff the value is a true boolean",
+			},
+			cli.BoolFlag{
+				Name:  "assert-false",
+				Usage: "Returns 0 exit code iff the value is a false boolean",
+			},
+			cli.BoolFlag{
+				Name:  "assert-ok-on-nil",
+				Usage: "Return 0 exit code if the value does not exist or the config file does not exist",
+			},
+		},
 		ArgumentHelp: "<key>",
 		Action: func(c *cli.Context) {
 			cl.ChooseCommand(NewCmdConfigGetRunner(g), "get", c)
+			if c.Bool("direct") {
+				cl.SetForkCmd(libcmdline.NoFork)
+				cl.SetLogForward(libcmdline.LogForwardNone)
+			}
 		},
 	}
 }
@@ -213,6 +352,10 @@ func NewCmdConfigSet(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Com
 			cli.BoolFlag{
 				Name:  "int, i",
 				Usage: "Treat the passed argument as an integer",
+			},
+			cli.BoolFlag{
+				Name:  "float, f",
+				Usage: "Treat the passed argument as a float",
 			},
 			cli.BoolFlag{
 				Name:  "obj, o",
@@ -254,6 +397,9 @@ func NewCmdConfigInfo(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Co
 func (v *CmdConfigGet) GetUsage() libkb.Usage {
 	return libkb.Usage{
 		Config: true,
+		// The root user may use the "config get -d" command to read
+		// config files.
+		AllowRoot: v.Direct,
 	}
 }
 

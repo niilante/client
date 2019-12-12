@@ -12,19 +12,24 @@ import (
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/crypto/scrypt"
 
+	"github.com/keybase/client/go/kbcrypto"
 	"github.com/keybase/client/go/libkb"
 	"github.com/keybase/client/go/protocol/keybase1"
 )
 
 type PaperKeyGenArg struct {
-	Passphrase    libkb.PaperKeyPhrase
-	SkipPush      bool
-	Me            *libkb.User
-	SigningKey    libkb.GenericKey
-	EncryptionKey libkb.NaclDHKeyPair
+	Passphrase libkb.PaperKeyPhrase
+	SkipPush   bool
 
-	LoginContext    libkb.LoginContext     // optional
-	SharedDHKeyring *libkb.SharedDHKeyring // optional
+	// One of Me or UID is required
+	// Me is required if not SkipPush
+	Me  *libkb.User
+	UID keybase1.UID
+
+	SigningKey     libkb.GenericKey      // optional
+	EncryptionKey  libkb.NaclDHKeyPair   // optional
+	PerUserKeyring *libkb.PerUserKeyring // optional
+	IsEldest       bool
 }
 
 // PaperKeyGen is an engine.
@@ -32,14 +37,15 @@ type PaperKeyGen struct {
 	arg *PaperKeyGenArg
 
 	// keys of the generated paper key
-	sigKey libkb.GenericKey
-	encKey libkb.NaclDHKeyPair
+	sigKey   libkb.GenericKey
+	encKey   libkb.NaclDHKeyPair
+	deviceID keybase1.DeviceID
 
 	libkb.Contextified
 }
 
 // NewPaperKeyGen creates a PaperKeyGen engine.
-func NewPaperKeyGen(arg *PaperKeyGenArg, g *libkb.GlobalContext) *PaperKeyGen {
+func NewPaperKeyGen(g *libkb.GlobalContext, arg *PaperKeyGenArg) *PaperKeyGen {
 	return &PaperKeyGen{
 		arg:          arg,
 		Contextified: libkb.NewContextified(g),
@@ -53,9 +59,9 @@ func (e *PaperKeyGen) Name() string {
 
 // GetPrereqs returns the engine prereqs.
 func (e *PaperKeyGen) Prereqs() Prereqs {
-	// only need session if pushing keys
+	// only need a device if pushing keys
 	return Prereqs{
-		Session: !e.arg.SkipPush,
+		Device: !e.arg.SkipPush && !e.arg.IsEldest,
 	}
 }
 
@@ -73,14 +79,22 @@ func (e *PaperKeyGen) SigKey() libkb.GenericKey {
 	return e.sigKey
 }
 
-func (e *PaperKeyGen) EncKey() libkb.GenericKey {
+func (e *PaperKeyGen) EncKey() libkb.NaclDHKeyPair {
 	return e.encKey
 }
 
+func (e *PaperKeyGen) DeviceID() keybase1.DeviceID {
+	return e.deviceID
+}
+
+func (e *PaperKeyGen) DeviceWithKeys() *libkb.DeviceWithKeys {
+	return libkb.NewDeviceWithKeysOnly(e.sigKey, e.encKey, libkb.KeychainModeNone)
+}
+
 // Run starts the engine.
-func (e *PaperKeyGen) Run(ctx *Context) error {
-	if e.G().Env.GetEnableSharedDH() {
-		err := e.syncSDH(ctx)
+func (e *PaperKeyGen) Run(m libkb.MetaContext) error {
+	if !e.arg.SkipPush {
+		err := e.syncPUK(m)
 		if err != nil {
 			return err
 		}
@@ -104,7 +118,7 @@ func (e *PaperKeyGen) Run(ctx *Context) error {
 	}
 
 	// push everything to the server
-	if err := e.push(ctx); err != nil {
+	if err := e.push(m); err != nil {
 		return err
 	}
 
@@ -114,27 +128,36 @@ func (e *PaperKeyGen) Run(ctx *Context) error {
 		return nil
 	}
 
-	e.G().KeyfamilyChanged(e.arg.Me.GetUID())
+	e.G().KeyfamilyChanged(m.Ctx(), e.getUID())
 
 	return nil
 }
 
-func (e *PaperKeyGen) syncSDH(ctx *Context) error {
-	// Sync the sdh keyring before updating other things.
-	sdhk, err := e.getSharedDHKeyring()
+func (e *PaperKeyGen) getUID() keybase1.UID {
+	if !e.arg.UID.IsNil() {
+		return e.arg.UID
+	}
+	if e.arg.Me != nil {
+		return e.arg.Me.GetUID()
+	}
+	return keybase1.UID("")
+}
+
+func (e *PaperKeyGen) syncPUK(m libkb.MetaContext) error {
+	// Sync the per-user-key keyring before updating other things.
+	pukring, err := e.getPerUserKeyring(m)
 	if err != nil {
 		return err
 	}
 	var upak *keybase1.UserPlusAllKeys
 	if e.arg.Me != nil {
-		tmp := e.arg.Me.ExportToUserPlusAllKeys(keybase1.Time(0))
+		tmp := e.arg.Me.ExportToUserPlusAllKeys()
 		upak = &tmp
 	}
-	err = sdhk.SyncDuringSignup(ctx.NetContext, e.arg.LoginContext, upak)
+	err = pukring.SyncWithExtras(m, upak)
 	if err != nil {
 		return err
 	}
-	// TODO if SDH_UPGRADE: may want to add a key here.
 	return nil
 }
 
@@ -146,7 +169,7 @@ func (e *PaperKeyGen) makeSigKey(seed []byte) error {
 
 	var key libkb.NaclSigningKeyPair
 	copy(key.Public[:], pub[:])
-	key.Private = &libkb.NaclSigningKeyPrivate{}
+	key.Private = &kbcrypto.NaclSigningKeyPrivate{}
 	copy(key.Private[:], priv[:])
 
 	e.sigKey = key
@@ -169,51 +192,51 @@ func (e *PaperKeyGen) makeEncKey(seed []byte) error {
 	return nil
 }
 
-func (e *PaperKeyGen) getClientHalfFromSecretStore() (libkb.LKSecClientHalf, libkb.PassphraseGeneration, error) {
-	zeroGen := libkb.PassphraseGeneration(0)
-	var dummy libkb.LKSecClientHalf
+func (e *PaperKeyGen) getClientHalfFromSecretStore(m libkb.MetaContext) (clientHalf libkb.LKSecClientHalf, ppgen libkb.PassphraseGeneration, err error) {
+	defer m.Trace("PaperKeyGen#getClientHalfFromSecretStore", func() error { return err })
 
 	secretStore := libkb.NewSecretStore(e.G(), e.arg.Me.GetNormalizedName())
 	if secretStore == nil {
-		return dummy, zeroGen, errors.New("No secret store available")
+		return clientHalf, ppgen, errors.New("No secret store available")
 	}
 
-	secret, err := secretStore.RetrieveSecret()
+	secret, err := secretStore.RetrieveSecret(m)
 	if err != nil {
-		return dummy, zeroGen, err
+		return clientHalf, ppgen, err
 	}
 
 	devid := e.G().Env.GetDeviceID()
 	if devid.IsNil() {
-		return dummy, zeroGen, fmt.Errorf("no device id set")
+		return clientHalf, ppgen, fmt.Errorf("no device id set")
 	}
-
-	var dev libkb.DeviceKey
-	aerr := e.G().LoginState().Account(func(a *libkb.Account) {
-		if err = libkb.RunSyncer(a.SecretSyncer(), e.arg.Me.GetUID(), a.LoggedIn(), a.LocalSession()); err != nil {
-			return
-		}
-		dev, err = a.SecretSyncer().FindDevice(devid)
-	}, "BackupKeygen.Run() -- retrieving passphrase generation)")
-	if aerr != nil {
-		return dummy, zeroGen, aerr
-	}
+	var ss *libkb.SecretSyncer
+	ss, err = m.ActiveDevice().SyncSecrets(m)
 	if err != nil {
-		return dummy, zeroGen, err
+		return clientHalf, ppgen, err
+	}
+	var dev libkb.DeviceKey
+	dev, err = ss.FindDevice(devid)
+	if err != nil {
+		return clientHalf, ppgen, err
 	}
 	serverHalf, err := libkb.NewLKSecServerHalfFromHex(dev.LksServerHalf)
 	if err != nil {
-		return dummy, zeroGen, err
+		return clientHalf, ppgen, err
 	}
 
-	clientHalf := serverHalf.ComputeClientHalf(secret)
+	clientHalf = serverHalf.ComputeClientHalf(secret)
 
 	return clientHalf, dev.PPGen, nil
 }
 
-func (e *PaperKeyGen) push(ctx *Context) error {
+func (e *PaperKeyGen) push(m libkb.MetaContext) (err error) {
+	defer m.Trace("PaperKeyGen#push", func() error { return err })()
 	if e.arg.SkipPush {
 		return nil
+	}
+
+	if e.arg.Me == nil {
+		return errors.New("no Me object but we wanted to push public keys")
 	}
 
 	// Create a new paper key device. Need the passphrase prefix
@@ -223,43 +246,51 @@ func (e *PaperKeyGen) push(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	e.deviceID = backupDev.ID
 
 	// create lks halves for this device.  Note that they aren't used for
 	// local, encrypted storage of the paper keys, but just for recovery
 	// purposes.
+	m.Dump()
 
-	foundStream := false
-	var ppgen libkb.PassphraseGeneration
-	var clientHalf libkb.LKSecClientHalf
-	if ctx.LoginContext != nil {
-		stream := ctx.LoginContext.PassphraseStreamCache().PassphraseStream()
-		if stream != nil {
-			foundStream = true
-			ppgen = stream.Generation()
-			clientHalf = stream.LksClientHalf()
-		}
-	} else {
-		e.G().LoginState().Account(func(a *libkb.Account) {
-			stream := a.PassphraseStream()
-			if stream == nil {
-				return
-			}
-			foundStream = true
-			ppgen = stream.Generation()
-			clientHalf = stream.LksClientHalf()
-		}, "BackupKeygen - push")
+	// Clear the passphrase stream if it's outdated, just in case some
+	// other device changed the passphrase.
+	if err := m.G().ActiveDevice.ClearPassphraseStreamCacheIfOutdated(m); err != nil {
+		return err
 	}
 
-	// stream was nil, so we must have loaded lks from the secret
-	// store.
-	if !foundStream {
-		clientHalf, ppgen, err = e.getClientHalfFromSecretStore()
-		if err != nil {
+	var ppgen libkb.PassphraseGeneration
+	var clientHalf libkb.LKSecClientHalf
+	if stream := m.PassphraseStream(); stream != nil {
+		m.Debug("Got cached passphrase stream")
+		clientHalf = stream.LksClientHalf()
+		ppgen = stream.Generation()
+	} else {
+		m.Debug("Got nil passphrase stream; going to secret store")
+		// stream was nil, so we must have loaded lks from the secret
+		// store.
+		clientHalf, ppgen, err = e.getClientHalfFromSecretStore(m)
+		switch err.(type) {
+		case nil:
+		case libkb.SecretStoreError:
+			// as a last resort try to prompt the user for their passphrase if
+			// the SecretUI is present
+			if m.UIs().HasUI(libkb.SecretUIKind) {
+				if pps, _, perr := libkb.GetPassphraseStreamViaPrompt(m); pps != nil {
+					clientHalf = pps.LksClientHalf()
+					ppgen = pps.Generation()
+				} else if perr != nil {
+					return perr
+				} else {
+					return err
+				}
+			}
+		default:
 			return err
 		}
 	}
 
-	backupLks := libkb.NewLKSecWithClientHalf(clientHalf, ppgen, e.arg.Me.GetUID(), e.G())
+	backupLks := libkb.NewLKSecWithClientHalf(clientHalf, ppgen, e.arg.Me.GetUID())
 	backupLks.SetServerHalf(libkb.NewLKSecServerHalfZeros())
 
 	ctext, err := backupLks.EncryptClientHalfRecovery(e.encKey)
@@ -267,24 +298,23 @@ func (e *PaperKeyGen) push(ctx *Context) error {
 		return err
 	}
 
-	// post them to the server.
-	var sr libkb.SessionReader
-	if ctx.LoginContext != nil {
-		sr = ctx.LoginContext.LocalSession()
-	}
-	if err := libkb.PostDeviceLKS(e.G(), sr, backupDev.ID, libkb.DeviceTypePaper, backupLks.GetServerHalf(), backupLks.Generation(), ctext, e.encKey.GetKID()); err != nil {
+	if err := libkb.PostDeviceLKS(m, backupDev.ID, libkb.DeviceTypePaper, backupLks.GetServerHalf(), backupLks.Generation(), ctext, e.encKey.GetKID()); err != nil {
 		return err
 	}
 
 	// push the paper signing key
 	sigDel := libkb.Delegator{
-		NewKey:         e.sigKey,
-		DelegationType: libkb.DelegationTypeSibkey,
-		Expire:         libkb.NaclEdDSAExpireIn,
-		ExistingKey:    e.arg.SigningKey,
-		Me:             e.arg.Me,
-		Device:         backupDev,
-		Contextified:   libkb.NewContextified(e.G()),
+		NewKey:       e.sigKey,
+		Expire:       libkb.NaclEdDSAExpireIn,
+		Me:           e.arg.Me,
+		Device:       backupDev,
+		Contextified: libkb.NewContextified(e.G()),
+	}
+	if e.arg.IsEldest {
+		sigDel.DelegationType = libkb.DelegationTypeEldest
+	} else {
+		sigDel.DelegationType = libkb.DelegationTypeSibkey
+		sigDel.ExistingKey = e.arg.SigningKey
 	}
 
 	// push the paper encryption key
@@ -298,42 +328,44 @@ func (e *PaperKeyGen) push(ctx *Context) error {
 		Contextified:   libkb.NewContextified(e.G()),
 	}
 
-	sdhBoxes, err := e.makeSharedDHSecretKeyBoxes(ctx)
+	pukBoxes, err := e.makePerUserKeyBoxes(m)
 	if err != nil {
 		return err
 	}
 
-	return libkb.DelegatorAggregator(ctx.LoginContext, []libkb.Delegator{sigDel, sigEnc}, sdhBoxes)
+	m.Debug("PaperKeyGen#push running delegators")
+	return libkb.DelegatorAggregator(m, []libkb.Delegator{sigDel, sigEnc}, nil, pukBoxes, nil, nil)
 }
 
-func (e *PaperKeyGen) makeSharedDHSecretKeyBoxes(ctx *Context) ([]keybase1.SharedDHSecretKeyBox, error) {
-	e.G().Log.CDebugf(ctx.NetContext, "PaperKeyGen#makeSharedDHSecretKeyBoxes(enabled:%v)", e.G().Env.GetEnableSharedDH())
-	var sdhBoxes = []keybase1.SharedDHSecretKeyBox{}
-	if e.G().Env.GetEnableSharedDH() {
-		sdhk, err := e.getSharedDHKeyring()
+func (e *PaperKeyGen) makePerUserKeyBoxes(m libkb.MetaContext) ([]keybase1.PerUserKeyBox, error) {
+	m.Debug("PaperKeyGen#makePerUserKeyBoxes")
+
+	var pukBoxes []keybase1.PerUserKeyBox
+	pukring, err := e.getPerUserKeyring(m)
+	if err != nil {
+		return nil, err
+	}
+	if pukring.HasAnyKeys() {
+		if e.arg.EncryptionKey.IsNil() {
+			return nil, errors.New("missing encryption key for creating paper key")
+		}
+		pukBox, err := pukring.PrepareBoxForNewDevice(m,
+			e.encKey,            // receiver key: new paper key enc
+			e.arg.EncryptionKey) // sender key: this device enc
 		if err != nil {
 			return nil, err
 		}
-		if !sdhk.HasAnyKeys() {
-			// TODO if SDH_UPGRADE: may want to add a key here.
-		} else {
-			sdhBoxes, err = sdhk.PrepareBoxesForNewDevice(ctx.NetContext,
-				e.encKey,            // receiver key: new paper key enc
-				e.arg.EncryptionKey) // sender key: this device enc
-			if err != nil {
-				return nil, err
-			}
-		}
+		pukBoxes = append(pukBoxes, pukBox)
 	}
-	e.G().Log.CDebugf(ctx.NetContext, "PaperKeyGen#makeSharedDHSecretKeyBoxes -> %v", len(sdhBoxes))
-	return sdhBoxes, nil
+	m.Debug("PaperKeyGen#makePerUserKeyBoxes -> %v", len(pukBoxes))
+	return pukBoxes, nil
 }
 
-func (e *PaperKeyGen) getSharedDHKeyring() (ret *libkb.SharedDHKeyring, err error) {
-	ret = e.arg.SharedDHKeyring
+func (e *PaperKeyGen) getPerUserKeyring(mctx libkb.MetaContext) (ret *libkb.PerUserKeyring, err error) {
+	ret = e.arg.PerUserKeyring
 	if ret != nil {
 		return
 	}
-	ret, err = e.G().GetSharedDHKeyring()
+	ret, err = e.G().GetPerUserKeyring(mctx.Ctx())
 	return
 }

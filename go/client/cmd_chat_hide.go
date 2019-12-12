@@ -25,6 +25,7 @@ func newCmdChatHide(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Comm
 		Action: func(c *cli.Context) {
 			cmd := &CmdChatHide{Contextified: libkb.NewContextified(g)}
 			cl.ChooseCommand(cmd, "hide", c)
+			cl.SetLogForward(libcmdline.LogForwardNone)
 		},
 		Flags: append(getConversationResolverFlags(), mustGetChatFlags("block", "unhide")...),
 	}
@@ -67,21 +68,23 @@ func (c *CmdChatHide) ParseArgv(ctx *cli.Context) error {
 func (c *CmdChatHide) Run() error {
 	ctx := context.TODO()
 
-	chatClient, err := GetChatLocalClient(c.G())
+	resolver, err := newChatConversationResolver(c.G())
 	if err != nil {
 		return err
 	}
 
-	resolver := &chatConversationResolver{G: c.G(), ChatClient: chatClient}
-	resolver.TlfClient, err = GetTlfClient(c.G())
-	if err != nil {
-		return err
+	if c.resolvingRequest.TlfName != "" {
+		if err = annotateResolvingRequest(c.G(), &c.resolvingRequest); err != nil {
+			return err
+		}
 	}
 
 	conversation, _, err := resolver.Resolve(ctx, c.resolvingRequest, chatConversationResolvingBehavior{
-		CreateIfNotExists: false,
-		Interactive:       false,
-		IdentifyBehavior:  keybase1.TLFIdentifyBehavior_CHAT_CLI,
+		CreateIfNotExists:       false,
+		MustNotExist:            false,
+		Interactive:             false,
+		IgnoreConversationError: true, // If we are reset, we still want to be able to hide the conv.
+		IdentifyBehavior:        keybase1.TLFIdentifyBehavior_CHAT_CLI,
 	})
 	if err != nil {
 		return err
@@ -92,11 +95,8 @@ func (c *CmdChatHide) Run() error {
 		Status:         c.status,
 	}
 
-	_, err = chatClient.SetConversationStatusLocal(ctx, setStatusArg)
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err = resolver.ChatClient.SetConversationStatusLocal(ctx, setStatusArg)
+	return err
 }
 
 func (c *CmdChatHide) GetUsage() libkb.Usage {

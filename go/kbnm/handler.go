@@ -8,16 +8,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
 var errInvalidMethod = errors.New("invalid method")
 
+var errInvalidInput = errors.New("invalid input")
+
 var errMissingField = errors.New("missing field")
 
 var errUserNotFound = errors.New("user not found")
-
-var errParsing = errors.New("failed to parse keybase output")
 
 var errKeybaseNotRunning = errors.New("keybase is not running")
 
@@ -35,11 +36,31 @@ func execRunner(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
 
-// Handler returns a request handler.
-func Handler() *handler {
+// reUsernameQuery matches valid username queries
+var reUsernameQuery = regexp.MustCompile(`^[a-zA-Z0-9_\-.:@]{1,256}$`)
+
+// checkUsernameQuery returns the query if it's valid to use
+// We return the valid string so that it can be used as a separate
+// pre-validated variable which makes it less likely that the validation will
+// be accidentally removed in the future, as opposed to if we just continued
+// using the input variable after validating it.
+func checkUsernameQuery(s string) (string, error) {
+	if s == "" {
+		return "", errMissingField
+	}
+	if !reUsernameQuery.MatchString(s) {
+		return "", errInvalidInput
+	}
+	return s, nil
+}
+
+// newHandler returns a request handler.
+func newHandler() *handler {
 	return &handler{
-		Run:               execRunner,
-		FindKeybaseBinary: findKeybaseBinary,
+		Run: execRunner,
+		FindKeybaseBinary: func() (string, error) {
+			return findKeybaseBinary(keybaseBinary)
+		},
 	}
 }
 
@@ -63,8 +84,12 @@ func (h *handler) Handle(req *Request) (interface{}, error) {
 
 // handleChat sends a chat message to a user.
 func (h *handler) handleChat(req *Request) error {
-	if req.Body == "" || req.To == "" {
+	if req.Body == "" {
 		return errMissingField
+	}
+	idQuery, err := checkUsernameQuery(req.To)
+	if err != nil {
+		return err
 	}
 
 	binPath, err := h.FindKeybaseBinary()
@@ -73,7 +98,7 @@ func (h *handler) handleChat(req *Request) error {
 	}
 
 	var out bytes.Buffer
-	cmd := exec.Command(binPath, "chat", "send", "--private", req.To)
+	cmd := exec.Command(binPath, "chat", "send", "--private", idQuery)
 	cmd.Env = append(os.Environ(), "KEYBASE_LOG_FORMAT=plain")
 	cmd.Stdin = strings.NewReader(req.Body)
 	cmd.Stdout = &out
@@ -175,8 +200,9 @@ func parseError(r io.Reader, fallback error) error {
 
 // handleQuery searches whether a user is present in Keybase.
 func (h *handler) handleQuery(req *Request) (*resultQuery, error) {
-	if req.To == "" {
-		return nil, errMissingField
+	idQuery, err := checkUsernameQuery(req.To)
+	if err != nil {
+		return nil, err
 	}
 
 	binPath, err := h.FindKeybaseBinary()
@@ -186,7 +212,7 @@ func (h *handler) handleQuery(req *Request) (*resultQuery, error) {
 
 	// Unfortunately `keybase id ...` does not support JSON output, so we parse the output
 	var out bytes.Buffer
-	cmd := exec.Command(binPath, "id", req.To)
+	cmd := exec.Command(binPath, "id", idQuery)
 	cmd.Env = append(os.Environ(), "KEYBASE_LOG_FORMAT=plain")
 	cmd.Stdout = &out
 	cmd.Stderr = &out

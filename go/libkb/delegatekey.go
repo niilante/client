@@ -5,6 +5,7 @@ package libkb
 
 import (
 	"encoding/hex"
+	"fmt"
 
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 	jsonw "github.com/keybase/go-jsonw"
@@ -19,28 +20,31 @@ type Delegator struct {
 	Contextified
 
 	// Set these fields
-	NewKey                GenericKey
-	ExistingKey           GenericKey
-	EldestKID             keybase1.KID
-	Me                    *User
-	Expire                int
-	Device                *Device
-	RevSig                string
-	ServerHalf            []byte
-	EncodedPrivateKey     string
-	Ctime                 int64
-	DelegationType        DelegationType
-	Aggregated            bool // During aggregation we skip some steps (posting, updating some state)
-	SharedDHKeyGeneration keybase1.SharedDHKeyGeneration
+	NewKey               GenericKey
+	ExistingKey          GenericKey
+	EldestKID            keybase1.KID
+	Me                   *User
+	Expire               int
+	Device               *Device
+	RevSig               string
+	ServerHalf           []byte
+	EncodedPrivateKey    string
+	Ctime                int64
+	DelegationType       DelegationType
+	Aggregated           bool // During aggregation we skip some steps (posting, updating some state)
+	PerUserKeyGeneration keybase1.PerUserKeyGeneration
+	MerkleRoot           *MerkleRoot
 
 	// Optional precalculated values used by KeyProof
-	LastSeqno   Seqno     // kex2 HandleDidCounterSign needs to sign subkey without a user but we know what the last seqno was
-	PrevLinkID  LinkID    // kex2 HandleDidCounterSign calculates previous link id without a user
-	SigningUser UserBasic // kex2 doesn't have a full user, but does have basic user info
+	Seqno       keybase1.Seqno // kex2 HandleDidCounterSign needs to sign subkey without a user but we know what the last seqno was
+	PrevLinkID  LinkID         // kex2 HandleDidCounterSign calculates previous link id without a user
+	SigningUser UserBasic      // kex2 doesn't have a full user, but does have basic user info
 
 	// Internal fields
+	proof        *ProofMetadataRes
 	sig          string
 	sigID        keybase1.SigID
+	linkID       LinkID
 	merkleTriple MerkleTriple
 	postArg      APIArg
 }
@@ -52,6 +56,13 @@ func (d Delegator) getExistingKID() (kid keybase1.KID) {
 		return
 	}
 	return d.ExistingKey.GetKID()
+}
+
+func (d Delegator) getMerkleHashMeta() (ret keybase1.HashMeta) {
+	if d.MerkleRoot == nil {
+		return ret
+	}
+	return d.MerkleRoot.ShortHash().ExportToHashMeta()
 }
 
 func (d Delegator) GetSigningKey() GenericKey {
@@ -71,36 +82,35 @@ func (d Delegator) IsEldest() bool { return d.DelegationType == DelegationTypeEl
 // of performing the key delegation.
 func (d Delegator) GetMerkleTriple() MerkleTriple { return d.merkleTriple }
 
-func (d *Delegator) CheckArgs() (err error) {
+func (d *Delegator) CheckArgs(m MetaContext) (err error) {
 
-	G.Log.Debug("+ Delegator::checkArgs()")
+	defer m.Trace("Delegator#CheckArgs", func() error { return err })()
+
+	if d.DelegationType == "" {
+		err = MissingDelegationTypeError{}
+	}
 
 	if d.NewKey == nil {
 		err = NoSecretKeyError{}
 		return
 	}
 
-	if d.DelegationType == "" {
-		err = MissingDelegationTypeError{}
-	}
-
 	if d.ExistingKey != nil {
-		G.Log.Debug("| Picked passed-in signing key")
+		m.Debug("| Picked passed-in signing key")
 	} else {
-		G.Log.Debug("| Picking new key for an eldest self-sig")
+		m.Debug("| Picking new key for an eldest self-sig")
 		d.DelegationType = DelegationTypeEldest
 	}
 
 	if d.EldestKID.Exists() || d.IsEldest() {
 	} else if kid := d.Me.GetEldestKID(); kid.IsNil() {
-		err = NoEldestKeyError{}
+		err = NoSigChainError{}
 		return err
 	} else {
 		d.EldestKID = kid
 	}
 
-	G.Log.Debug("| Picked key %s for signing", d.getSigningKID())
-	G.Log.Debug("- Delegator::checkArgs()")
+	m.Debug("| Picked key %s for signing", d.getSigningKID())
 
 	return nil
 }
@@ -109,36 +119,32 @@ func (d *Delegator) CheckArgs() (err error) {
 // the delegator. This will check the given key first, then a device Key if we have one,
 // and otherwise will leave the signing key unset so that we will set it
 // as the eldest key on upload.
-// lctx can be nil.
-func (d *Delegator) LoadSigningKey(lctx LoginContext, ui SecretUI) (err error) {
-
-	G.Log.Debug("+ Delegator::LoadSigningKey")
-	defer func() {
-		G.Log.Debug("+ Delegator::LoadSigningKey -> %s, (found=%v)", ErrToOk(err), (d.GetSigningKey() != nil))
-	}()
+// m.LoginContext can be nil.
+func (d *Delegator) LoadSigningKey(m MetaContext, ui SecretUI) (err error) {
+	defer m.Trace("Delegator#LoadSigningKey", func() error { return err })()
 
 	if d.ExistingKey != nil {
-		G.Log.Debug("| Was set ahead of time")
-		return
+		m.Debug("| Was set ahead of time")
+		return nil
 	}
 
 	if d.Me == nil {
 		d.Me, err = LoadMe(NewLoadUserPubOptionalArg(d.G()))
 		if err != nil {
-			return
-		} else if d.Me == nil {
-			G.Log.Debug("| Me didn't load")
-			return
+			return err
+		}
+		if d.Me == nil {
+			m.Debug("| Me didn't load")
+			return nil
 		}
 	}
 
 	if !d.Me.HasActiveKey() {
-		G.Log.Debug("| PGPKeyImportEngine: no active key found, so assuming set of eldest key")
-		return
+		m.Debug("| PGPKeyImportEngine: no active key found, so assuming set of eldest key")
+		return nil
 	}
 
 	arg := SecretKeyPromptArg{
-		LoginContext: lctx,
 		Ska: SecretKeyArg{
 			Me:      d.Me,
 			KeyType: DeviceSigningKeyType,
@@ -146,88 +152,83 @@ func (d *Delegator) LoadSigningKey(lctx LoginContext, ui SecretUI) (err error) {
 		SecretUI: ui,
 		Reason:   "sign new key",
 	}
-	d.ExistingKey, err = d.G().Keyrings.GetSecretKeyWithPrompt(arg)
+	d.ExistingKey, err = m.G().Keyrings.GetSecretKeyWithPrompt(m, arg)
 
 	return err
 }
 
 // Run the Delegator, performing all necessary internal operations.  Return err
 // on failure and nil on success.
-func (d *Delegator) Run(lctx LoginContext) (err error) {
+func (d *Delegator) Run(m MetaContext) (err error) {
 	var jw *jsonw.Wrapper
+	defer m.Trace("Delegator#Run", func() error { return err })()
 
-	G.Log.Debug("+ Delegator.Run()")
-	defer func() {
-		G.Log.Debug("- Delegator.Run() -> %s", ErrToOk(err))
-	}()
-
-	if err = d.CheckArgs(); err != nil {
-		return
+	if err = d.CheckArgs(m); err != nil {
+		return err
 	}
+
+	d.MerkleRoot = m.G().MerkleClient.LastRoot(m)
 
 	// We'll need to generate two proofs, so set the Ctime
 	// so that we get the same time both times
-	d.Ctime = d.G().Clock().Now().Unix()
+	d.Ctime = m.G().Clock().Now().Unix()
 
 	// For a sibkey signature, we first sign the blob with the
 	// sibkey, and then embed that signature for the delegating key
 	if d.DelegationType == DelegationTypeSibkey {
-		if jw, err = KeyProof(*d); err != nil {
-			G.Log.Debug("| Failure in intermediate KeyProof()")
+		if jw, err = KeyProof(m, *d); err != nil {
+			m.Debug("| Failure in intermediate KeyProof()")
 			return err
 		}
 
 		if d.RevSig, _, _, err = SignJSON(jw, d.NewKey); err != nil {
-			G.Log.Debug("| Failure in intermediate SignJson()")
+			m.Debug("| Failure in intermediate SignJson()")
 			return err
 		}
 	}
 
-	if d.GStrict() == nil {
-		panic("null g strict")
-	}
-
-	if d.GStrict().LocalDb == nil {
+	if m.G().LocalDb == nil {
 		panic("should have a local DB")
 	}
 
-	if jw, err = KeyProof(*d); err != nil {
-		G.Log.Debug("| Failure in KeyProof()")
-		return
-	}
-
-	return d.SignAndPost(lctx, jw)
-}
-
-func (d *Delegator) SignAndPost(lctx LoginContext, jw *jsonw.Wrapper) (err error) {
-
-	var linkid LinkID
-
-	if d.sig, d.sigID, linkid, err = SignJSON(jw, d.GetSigningKey()); err != nil {
-		G.Log.Debug("| Failure in SignJson()")
+	proof, err := KeyProof2(m, *d)
+	if err != nil {
+		m.Debug("| Failure in KeyProof2()")
 		return err
 	}
 
-	if err = d.post(lctx); err != nil {
-		G.Log.Debug("| Failure in post()")
-		return
-	}
+	return d.SignAndPost(m, proof)
+}
 
-	if err = d.updateLocalState(linkid); err != nil {
-		return
+func (d *Delegator) SignAndPost(m MetaContext, proof *ProofMetadataRes) (err error) {
+	d.proof = proof
+	if d.sig, d.sigID, d.linkID, err = SignJSON(proof.J, d.GetSigningKey()); err != nil {
+		m.Debug("| Failure in SignJson()")
+		return err
 	}
-
+	if err = d.post(m); err != nil {
+		m.Debug("| Failure in post()")
+		return err
+	}
+	if err = d.updateLocalState(d.linkID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (d *Delegator) updateLocalState(linkid LinkID) (err error) {
-	d.Me.SigChainBump(linkid, d.sigID)
-	d.merkleTriple = MerkleTriple{LinkID: linkid, SigID: d.sigID}
-
-	return d.Me.localDelegateKey(d.NewKey, d.sigID, d.getExistingKID(), d.IsSibkeyOrEldest(), d.IsEldest())
+func (d *Delegator) isHighDelegator() bool {
+	return d.DelegationType == DelegationTypeEldest ||
+		d.DelegationType == DelegationTypeSibkey ||
+		d.DelegationType == DelegationTypePGPUpdate
 }
 
-func (d *Delegator) post(lctx LoginContext) (err error) {
+func (d *Delegator) updateLocalState(linkID LinkID) (err error) {
+	d.Me.SigChainBump(linkID, d.sigID, d.isHighDelegator())
+	d.merkleTriple = MerkleTriple{LinkID: linkID, SigID: d.sigID}
+	return d.Me.localDelegateKey(d.NewKey, d.sigID, d.getExistingKID(), d.IsSibkeyOrEldest(), d.IsEldest(), d.getMerkleHashMeta(), keybase1.Seqno(0))
+}
+
+func (d *Delegator) post(m MetaContext) (err error) {
 	var pub string
 	if pub, err = d.NewKey.Encode(); err != nil {
 		return
@@ -267,15 +268,20 @@ func (d *Delegator) post(lctx LoginContext) (err error) {
 		SessionType: APISessionTypeREQUIRED,
 		Args:        hargs,
 	}
-	if lctx != nil {
-		arg.SessionR = lctx.LocalSession()
-	}
-
 	if d.Aggregated {
 		d.postArg = arg
+		// Don't post to the server. DelegatorAggregator will do that.
 		return nil
 	}
-	_, err = d.G().API.Post(arg)
-
-	return err
+	_, err = m.G().API.Post(m, arg)
+	if err != nil {
+		return err
+	}
+	if d.Me == nil {
+		return fmt.Errorf("delegator missing 'me' info")
+	}
+	if d.proof == nil {
+		return fmt.Errorf("delegator missing proof seqno")
+	}
+	return MerkleCheckPostedUserSig(m, d.Me.GetUID(), d.proof.Seqno, d.linkID)
 }

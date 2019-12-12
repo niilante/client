@@ -10,31 +10,33 @@ import (
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
 
-type loopbackIdentifyUI struct {
+type LoopbackIdentifyUI struct {
 	libkb.Contextified
 	sync.Mutex
 	trackBreaksP **keybase1.IdentifyTrackBreaks
 }
 
-func newLoopbackIdentifyUI(g *libkb.GlobalContext, tb **keybase1.IdentifyTrackBreaks) *loopbackIdentifyUI {
-	return &loopbackIdentifyUI{
+var _ libkb.IdentifyUI = (*LoopbackIdentifyUI)(nil)
+
+func NewLoopbackIdentifyUI(g *libkb.GlobalContext, tb **keybase1.IdentifyTrackBreaks) *LoopbackIdentifyUI {
+	return &LoopbackIdentifyUI{
 		Contextified: libkb.NewContextified(g),
 		trackBreaksP: tb,
 	}
 }
 
-func (b *loopbackIdentifyUI) Start(s string, r keybase1.IdentifyReason, f bool) error {
+func (b *LoopbackIdentifyUI) Start(m libkb.MetaContext, s string, r keybase1.IdentifyReason, f bool) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) trackBreaks() *keybase1.IdentifyTrackBreaks {
+func (b *LoopbackIdentifyUI) trackBreaks() *keybase1.IdentifyTrackBreaks {
 	if *b.trackBreaksP == nil {
 		*b.trackBreaksP = &keybase1.IdentifyTrackBreaks{}
 	}
 	return *b.trackBreaksP
 }
 
-func (b *loopbackIdentifyUI) FinishWebProofCheck(p keybase1.RemoteProof, l keybase1.LinkCheckResult) error {
+func (b *LoopbackIdentifyUI) FinishWebProofCheck(m libkb.MetaContext, p keybase1.RemoteProof, l keybase1.LinkCheckResult) error {
 	b.Lock()
 	defer b.Unlock()
 	if l.BreaksTracking {
@@ -47,19 +49,23 @@ func (b *loopbackIdentifyUI) FinishWebProofCheck(p keybase1.RemoteProof, l keyba
 	return nil
 }
 
-func (b *loopbackIdentifyUI) FinishSocialProofCheck(p keybase1.RemoteProof, l keybase1.LinkCheckResult) error {
-	return b.FinishWebProofCheck(p, l)
+func (b *LoopbackIdentifyUI) FinishSocialProofCheck(m libkb.MetaContext, p keybase1.RemoteProof, l keybase1.LinkCheckResult) error {
+	return b.FinishWebProofCheck(m, p, l)
 }
 
-func (b *loopbackIdentifyUI) Confirm(o *keybase1.IdentifyOutcome) (keybase1.ConfirmResult, error) {
+func (b *LoopbackIdentifyUI) Confirm(m libkb.MetaContext, o *keybase1.IdentifyOutcome) (keybase1.ConfirmResult, error) {
 	return keybase1.ConfirmResult{}, nil
 }
 
-func (b *loopbackIdentifyUI) DisplayCryptocurrency(c keybase1.Cryptocurrency) error {
+func (b *LoopbackIdentifyUI) DisplayCryptocurrency(m libkb.MetaContext, c keybase1.Cryptocurrency) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) DisplayKey(k keybase1.IdentifyKey) error {
+func (b *LoopbackIdentifyUI) DisplayStellarAccount(libkb.MetaContext, keybase1.StellarAccount) error {
+	return nil
+}
+
+func (b *LoopbackIdentifyUI) DisplayKey(m libkb.MetaContext, k keybase1.IdentifyKey) error {
 	b.Lock()
 	defer b.Unlock()
 	if k.BreaksTracking {
@@ -69,38 +75,38 @@ func (b *loopbackIdentifyUI) DisplayKey(k keybase1.IdentifyKey) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) ReportLastTrack(s *keybase1.TrackSummary) error {
+func (b *LoopbackIdentifyUI) ReportLastTrack(m libkb.MetaContext, s *keybase1.TrackSummary) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) LaunchNetworkChecks(i *keybase1.Identity, u *keybase1.User) error {
+func (b *LoopbackIdentifyUI) LaunchNetworkChecks(m libkb.MetaContext, i *keybase1.Identity, u *keybase1.User) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) DisplayTrackStatement(s string) error {
+func (b *LoopbackIdentifyUI) DisplayTrackStatement(m libkb.MetaContext, s string) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) DisplayUserCard(c keybase1.UserCard) error {
+func (b *LoopbackIdentifyUI) DisplayUserCard(m libkb.MetaContext, c keybase1.UserCard) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) ReportTrackToken(t keybase1.TrackToken) error {
+func (b *LoopbackIdentifyUI) ReportTrackToken(m libkb.MetaContext, t keybase1.TrackToken) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) Cancel() error {
+func (b *LoopbackIdentifyUI) Cancel(m libkb.MetaContext) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) Finish() error {
+func (b *LoopbackIdentifyUI) Finish(m libkb.MetaContext) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) DisplayTLFCreateWithInvite(d keybase1.DisplayTLFCreateWithInviteArg) error {
+func (b *LoopbackIdentifyUI) DisplayTLFCreateWithInvite(m libkb.MetaContext, d keybase1.DisplayTLFCreateWithInviteArg) error {
 	return nil
 }
 
-func (b *loopbackIdentifyUI) Dismiss(s string, r keybase1.DismissReason) error {
+func (b *LoopbackIdentifyUI) Dismiss(m libkb.MetaContext, s string, r keybase1.DismissReason) error {
 	return nil
 }

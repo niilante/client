@@ -116,16 +116,6 @@ func mountInfo(fstype string) ([]keybase1.FuseMountInfo, error) {
 	return mountInfos, nil
 }
 
-// KeybaseFuseStatusForAppBundle returns Fuse status for application at appPath
-func KeybaseFuseStatusForAppBundle(appPath string, log Log) (keybase1.FuseStatus, error) {
-	bundleVersion, err := fuseBundleVersion(appPath, log)
-	if err != nil {
-		return keybase1.FuseStatus{}, err
-	}
-	fuseStatus := KeybaseFuseStatus(bundleVersion, log)
-	return fuseStatus, err
-}
-
 func findStringInPlist(key string, plistData []byte, log Log) string {
 	// Hack to parse plist, instead of parsing we'll use a regex
 	res := fmt.Sprintf(`<key>%s<\/key>\s*<string>([\S ]+)<\/string>`, key)
@@ -152,15 +142,6 @@ func loadPlist(plistPath string, log Log) ([]byte, error) {
 	return ioutil.ReadAll(plistFile)
 }
 
-func fuseBundleVersion(appPath string, log Log) (string, error) {
-	plistPath := filepath.Join(appPath, "Contents/Resources/KeybaseInstaller.app/Contents/Info.plist")
-	plistData, err := loadPlist(plistPath, log)
-	if err != nil {
-		return "", err
-	}
-	return findStringInPlist("KBFuseVersion", plistData, log), nil
-}
-
 func fuseInstallVersion(log Log) (string, error) {
 	plistPath := filepath.Join(installPath, "Contents/Info.plist")
 	plistData, err := loadPlist(plistPath, log)
@@ -168,59 +149,4 @@ func fuseInstallVersion(log Log) (string, error) {
 		return "", err
 	}
 	return findStringInPlist("CFBundleVersion", plistData, log), nil
-}
-
-// checkFuseUpgrade will see if the Fuse version in the Keybase.app bundle
-// is new, and if so will uninstall KBFS so that it can upgrade Fuse.
-// If force is true, the Fuse upgrade is attempted even if it's not needed.
-// Returns true if KBFS should be re-installed (after the Fuse upgrade succeeded
-// or failed).
-func checkFuseUpgrade(context Context, appPath string, force bool, log Log) (reinstallKBFS bool, err error) {
-	runMode := context.GetRunMode()
-	var mountDir string
-	mountDir, err = context.GetMountDir()
-	if err != nil {
-		return
-	}
-	log.Info("Checking Fuse status")
-	fuseStatus, err := KeybaseFuseStatusForAppBundle(appPath, log)
-	if err != nil {
-		return
-	}
-	log.Info("Fuse status: %s", fuseStatus)
-
-	hasKBFuseMounts := false
-	for _, mountInfo := range fuseStatus.MountInfos {
-		if mountInfo.Fstype == "kbfuse" {
-			hasKBFuseMounts = true
-			break
-		}
-	}
-
-	if fuseStatus.InstallAction == keybase1.InstallAction_UPGRADE || force {
-		log.Info("Fuse needs upgrade")
-		if hasKBFuseMounts {
-			log.Info("We have mounts, let's uninstall KBFS so the installer can upgrade")
-			reinstallKBFS = true
-			err = UninstallKBFS(runMode, mountDir, true, true, log)
-			if err != nil {
-				return
-			}
-		}
-
-		// Do Fuse upgrade
-		log.Info("Installing Fuse")
-		var out []byte
-		out, err = exec.Command(
-			filepath.Join(appPath, "Contents/Resources/KeybaseInstaller.app/Contents/MacOS/Keybase"),
-			fmt.Sprintf("--app-path=%s", appPath),
-			"--run-mode=prod",
-			"--install-fuse").CombinedOutput()
-		log.Debug("Fuse install: %s", string(out))
-		if err != nil {
-			return
-		}
-	}
-
-	return
 }

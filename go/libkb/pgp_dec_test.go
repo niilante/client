@@ -28,11 +28,11 @@ func TestPGPDecryptBasic(t *testing.T) {
 	}
 
 	out := NewBufferCloser()
-	if _, err := PGPDecryptWithBundles(G, mid, out, recipients); err != nil {
+	if _, err := PGPDecryptWithBundles(tc.G, mid, out, recipients); err != nil {
 		t.Fatal(err)
 	}
 
-	dec := string(out.Bytes())
+	dec := out.String()
 	if dec != msg {
 		t.Errorf("decoded: %q, expected %q", dec, msg)
 	}

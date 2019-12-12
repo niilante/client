@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/nacl/secretbox"
 
-	"github.com/keybase/client/go/libkb"
+	"github.com/keybase/client/go/kbcrypto"
 	"github.com/keybase/go-crypto/ed25519"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +21,25 @@ var plaintextInputs = []string{
 	"1",
 	"short",
 	strings.Repeat("long", 1000000),
+}
+
+type arbitraryMsg struct {
+	Message string `codec:"m" json:"m"`
+}
+type arbitraryNested struct {
+	Fun    arbitraryMsg `codec:"f" json:"f"`
+	Boring arbitraryMsg `codec:"b" json:"b"`
+}
+
+var associatedDataInputs = []interface{}{
+	"",
+	nil,
+	map[string]map[float64]map[string]string{"first": {2.22000222: {"third": "fourth"}}},
+	strings.Repeat("long", 1000000),
+	arbitraryNested{
+		Fun:    arbitraryMsg{Message: "🤠"},
+		Boring: arbitraryMsg{Message: "📄"},
+	},
 }
 
 func zeroSecretboxKey() SecretboxKey {
@@ -51,8 +70,8 @@ func zeroSignKey() SignKey {
 	return &key
 }
 
-func testingPrefix() libkb.SignaturePrefix {
-	return libkb.SignaturePrefixTesting
+func testingPrefix() kbcrypto.SignaturePrefix {
+	return kbcrypto.SignaturePrefixTesting
 }
 
 func zeroEncoder() *Encoder {
@@ -69,6 +88,19 @@ func zeroSealWhole(plaintext []byte) []byte {
 
 func zeroOpenWhole(plaintext []byte) ([]byte, error) {
 	return OpenWhole(plaintext, zeroSecretboxKey(), zeroVerifyKey(), testingPrefix(), zeroNonce())
+}
+
+func zeroSealWithAssociatedData(plaintext []byte, associatedData interface{}) []byte {
+	res, err := SealWithAssociatedData(plaintext, associatedData, zeroSecretboxKey(), zeroSignKey(), testingPrefix(), zeroNonce())
+	if err != nil {
+		// this should never actually error
+		panic(err)
+	}
+	return res
+}
+
+func zeroOpenWithAssociatedData(plaintext []byte, associatedData interface{}) ([]byte, error) {
+	return OpenWithAssociatedData(plaintext, associatedData, zeroSecretboxKey(), zeroVerifyKey(), testingPrefix(), zeroNonce())
 }
 
 func assertErrorType(t *testing.T, err error, expectedType ErrorType) {
@@ -108,8 +140,8 @@ func TestPacketRoundtrips(t *testing.T) {
 			t.Fatal("opened bytes don't equal the input")
 		}
 
-		if len(sealed) != getPacketLen(len(input)) {
-			t.Fatalf("Expected len %d but found %d", getPacketLen(len(input)), len(sealed))
+		if int64(len(sealed)) != getPacketLen(int64(len(input))) {
+			t.Fatalf("Expected len %d but found %d", getPacketLen(int64(len(input))), len(sealed))
 		}
 	}
 }
@@ -125,8 +157,8 @@ func TestWholeRoundtrips(t *testing.T) {
 			t.Fatal("opened bytes don't equal the input")
 		}
 
-		if len(sealed) != GetSealedSize(len(input)) {
-			t.Fatalf("Expected len %d but found %d", GetSealedSize(len(input)), len(sealed))
+		if int64(len(sealed)) != GetSealedSize(int64(len(input))) {
+			t.Fatalf("Expected len %d but found %d", GetSealedSize(int64(len(input))), len(sealed))
 		}
 	}
 }
@@ -160,8 +192,8 @@ func TestByteAtATimeRoundtrips(t *testing.T) {
 			t.Fatal("opened bytes don't equal the input")
 		}
 
-		if len(sealed) != GetSealedSize(len(input)) {
-			t.Fatalf("Expected len %d but found %d", GetSealedSize(len(input)), len(sealed))
+		if int64(len(sealed)) != GetSealedSize(int64(len(input))) {
+			t.Fatalf("Expected len %d but found %d", GetSealedSize(int64(len(input))), len(sealed))
 		}
 	}
 }
@@ -193,8 +225,8 @@ func TestReaderWrapperRoundtrips(t *testing.T) {
 		if !bytes.Equal([]byte(input), decoded) {
 			t.Fatal("decoded bytes don't equal the input")
 		}
-		if len(encoded) != GetSealedSize(len(input)) {
-			t.Fatalf("Expected encoded len %d but found %d", GetSealedSize(len(input)), len(encoded))
+		if int64(len(encoded)) != GetSealedSize(int64(len(input))) {
+			t.Fatalf("Expected encoded len %d but found %d", GetSealedSize(int64(len(input))), len(encoded))
 		}
 	}
 }
@@ -247,7 +279,7 @@ func TestInvalidSignature(t *testing.T) {
 func TestErrorsReturnedFromDecoder(t *testing.T) {
 	// We need bad bytes long enough to trigger an open. This indirectly tests
 	// that the exact packet length is enough for that.
-	badPacket := bytes.Repeat([]byte{0}, getPacketLen(DefaultPlaintextChunkLength))
+	badPacket := bytes.Repeat([]byte{0}, int(getPacketLen(DefaultPlaintextChunkLength)))
 	decoder := zeroDecoder()
 	_, err := decoder.Write(badPacket)
 	assertErrorType(t, err, BadSecretbox)
@@ -284,7 +316,7 @@ func throwawayBuffer() []byte {
 
 // Similar to TestErrorsReturnedFromDecoder above, but for the reader.
 func TestErrorsReturnedFromDecodingReader(t *testing.T) {
-	badPacket := bytes.Repeat([]byte{0}, getPacketLen(DefaultPlaintextChunkLength))
+	badPacket := bytes.Repeat([]byte{0}, int(getPacketLen(DefaultPlaintextChunkLength)))
 	reader := NewDecodingReader(
 		zeroSecretboxKey(),
 		zeroVerifyKey(),
@@ -378,7 +410,7 @@ func TestTruncatedFails(t *testing.T) {
 	// detectable, but it exercises the simplest cases.
 
 	// One full packet's worth and then a little bit more.
-	plaintext := bytes.Repeat([]byte{0}, DefaultPlaintextChunkLength+42)
+	plaintext := bytes.Repeat([]byte{0}, int(DefaultPlaintextChunkLength+42))
 	sealed := zeroSealWhole(plaintext)
 
 	// Try truncating in the middle of a packet.
@@ -399,7 +431,7 @@ func TestPacketSwapInOneMessageFails(t *testing.T) {
 	// detectable, but it exercises the simplest cases.
 
 	// Two full packets' worth.
-	plaintext := bytes.Repeat([]byte{0}, DefaultPlaintextChunkLength*2)
+	plaintext := bytes.Repeat([]byte{0}, int(DefaultPlaintextChunkLength*2))
 	sealed := zeroSealWhole(plaintext)
 
 	// Swap the first two packets. Make sure to make *copies* of both packets,
@@ -420,13 +452,13 @@ func TestPacketSwapBetweenMessagesFails(t *testing.T) {
 	// detectable, but it exercises the simplest cases.
 
 	// One full packet's worth and then a little bit more.
-	plaintext1 := bytes.Repeat([]byte{1}, DefaultPlaintextChunkLength+42)
+	plaintext1 := bytes.Repeat([]byte{1}, int(DefaultPlaintextChunkLength+42))
 	sealed1 := zeroSealWhole(plaintext1)
 
 	// Encrypt another same plaintext with a different nonce. (If we used the
 	// same nonce, packet swapping *would* be possible, not to mention all the
 	// crypto would be ruined.)
-	plaintext2 := bytes.Repeat([]byte{2}, DefaultPlaintextChunkLength+42)
+	plaintext2 := bytes.Repeat([]byte{2}, int(DefaultPlaintextChunkLength+42))
 	var nonce2 [16]byte
 	nonce2[0] = 42
 	sealed2 := SealWhole(plaintext2, zeroSecretboxKey(), zeroSignKey(), testingPrefix(), &nonce2)
@@ -556,17 +588,17 @@ func TestCoverageHacks(t *testing.T) {
 	decoder.ChangePlaintextChunkLenForTesting(42)
 	// Try to open a packet longer than the internal buffer.
 	shouldPanic(t, func() {
-		decoder.openOnePacket(999)
+		_, _ = decoder.openOnePacket(999)
 	})
 	// Try to Finish with too much data in the buffer.
 	decoder.buf = bytes.Repeat([]byte{0}, 999)
 	shouldPanic(t, func() {
-		decoder.Finish()
+		_, _ = decoder.Finish()
 	})
 }
 
 func TestNullInPrefix(t *testing.T) {
-	encoder := NewEncoder(zeroSecretboxKey(), zeroSignKey(), libkb.SignaturePrefix("Keybase-bad-prefix\x00"), zeroNonce())
+	encoder := NewEncoder(zeroSecretboxKey(), zeroSignKey(), kbcrypto.SignaturePrefix("Keybase-bad-prefix\x00"), zeroNonce())
 	encoder.Write([]byte("kaboom"))
 	shouldPanic(t, func() {
 		encoder.Finish()
@@ -634,7 +666,8 @@ func TestVectors(t *testing.T) {
 
 		// Test open
 		decoder := zeroDecoder()
-		decoder.Write(sealedRef)
+		_, err = decoder.Write(sealedRef)
+		require.NoError(t, err)
 		opened, err := decoder.Finish()
 		if err != nil {
 			t.Fatalf("i:%d error opening: %v", i, err)
@@ -664,4 +697,31 @@ The fields are described as follows:
 `,
 		sealedHex: `9c488f76be8f8f5eb84e37737017ce5dc92ea5c4752b6af99dd17df6f71d625252344511a903d0a8bfeac4574c52c1ecdfdba71beb95c8d9b60e0bd1bb4c4f83742d7b46c7d827c6a79397cd4dedd8a52d769e92798608a4389f46722f4f45391862a323f3006ec74f1b9d92d709291a17216119445b1dce49912f59b00eeb74af2e6779623de2b5d8e229bc2934dbf8d98c5dfd558dca8080fad3bf217e25f313ddaa3cc0cb193cd7561d8be207aa11b44822b6fd80dabcb817683883c44ee5cab7390ce13103cd098c5f7a9c2e36bf62462d163fbd78efb429e90f141d579f01eeeb33713c40b86069da04d53f9aa33ecadd7af28556573e76a11b88d27253cd90f743b3c8087bbdf18b1f3f3b8d1d7adc15f0a4021590812b822b9d38e6e79a59168dfb51be1ded8c47cc228b59d75ea1e1f61f7a26fb6d0e4992cffb0cf4709e3d9f9ad6252719fa795acc8f71bacf3e32bcf35b55f899d3768eb3dc5147eb96dd8c09f7818487bc5ab15d3d0ded506bc596a0a182236138010e28cda2e1dd63cf6706707888174562949bc6a75aa22823c4a82ecfec3ae30b1081465d46c3596c21017520f7ef2b63b7a7b733f2b32a7f00746dba953805048ef2af1cab77eb12c29227f42aaaedc2c394120fde461ab6c078b503fcaa73f20be05bef9c5e6718d49904295fc32f753316789cb61a65507ba8800eac82856dda77cfd961518887caeda8ccce8b16e2750911272daccff1c9a104a1481552d8340975ee6fe9c9e371a7053267b67ef97903d9f4a8071f85667f67cc09730e0789c3e230f529d1c4caeb047642e225063d5c305a1d03a1941c18f15b9e36692e41bf3340f1e9876db480974cbf41eedaaacd01ca6d62d270f4c8f0df25c1d781b1eaeac0b1d3887fd5e07f12c5bf576fe1e99471c8894f8981d0fb86e7ac860f9b2da2e0654520ac9b53cf3949a01d5866a06f7d8ad8865042d96d2cae118f9ab5980ada48a720e47b0ade9e984ef2e12904ca41ef30f2ff0464107042aca152ffd5b7081fd481fe76aa23f04d840f43a6e2f17ae5dea74298730c7ffce42bafe108cc70b5839a9ebb28cd8318d03529d680d75a68cc3dbf261c43eebc698bcf4c6f90`,
 	},
+}
+
+func TestAssociatedData(t *testing.T) {
+	for _, associatedData := range associatedDataInputs {
+		for _, input := range plaintextInputs {
+			sealed := zeroSealWithAssociatedData([]byte(input), associatedData)
+			opened, err := zeroOpenWithAssociatedData(sealed, associatedData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal([]byte(input), opened) {
+				t.Fatal("opened bytes don't equal the input")
+			}
+		}
+	}
+
+	plaintext := "This is one time where television really fails to capture the true excitement of a large squirrel predicting the weather."
+	associatedData := "groundhog day"
+	sealed := zeroSealWithAssociatedData([]byte(plaintext), associatedData)
+	opened, err := zeroOpenWithAssociatedData(sealed, associatedData)
+	require.NoError(t, err)
+	require.Equal(t, opened, []byte(plaintext))
+	// tweaking the associated data should fail to open
+	incorrectAssociatedData := "groundhog day 2, the repeatening"
+	opened, err = zeroOpenWithAssociatedData(sealed, incorrectAssociatedData)
+	require.True(t, bytes.Equal(opened, []byte{}))
+	assertErrorType(t, err, AssociatedDataMismatch)
 }

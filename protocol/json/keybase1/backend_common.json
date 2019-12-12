@@ -12,7 +12,8 @@
       "name": "BlockType",
       "symbols": [
         "DATA_0",
-        "MD_1"
+        "MD_1",
+        "GIT_2"
       ]
     },
     {
@@ -24,7 +25,7 @@
           "name": "blockHash"
         },
         {
-          "type": "UID",
+          "type": "UserOrTeamID",
           "name": "chargedTo"
         },
         {

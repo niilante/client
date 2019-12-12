@@ -7,6 +7,7 @@ package engine
 
 import (
 	"github.com/keybase/client/go/libkb"
+	"github.com/keybase/client/go/protocol/keybase1"
 )
 
 // AccountDelete is an engine.
@@ -44,41 +45,30 @@ func (e *AccountDelete) SubConsumers() []libkb.UIConsumer {
 }
 
 // Run starts the engine.
-func (e *AccountDelete) Run(ctx *Context) error {
-	var postErr error
-	aerr := e.G().LoginState().Account(func(a *libkb.Account) {
-		if err := a.LoginSession().Load(); err != nil {
-			postErr = err
-			return
-		}
-		lp, err := libkb.ComputeLoginPackage(a, "")
+func (e *AccountDelete) Run(m libkb.MetaContext) error {
+	username := m.G().GetEnv().GetUsername()
+
+	passphraseState, err := libkb.LoadPassphraseState(m)
+	if err != nil {
+		return err
+	}
+
+	var passphrase *string
+	if passphraseState == keybase1.PassphraseState_KNOWN {
+		// Passphrase is required to create PDPKA, but that's not required for
+		// randomPW users.
+		arg := libkb.DefaultPassphrasePromptArg(m, username.String())
+		res, err := m.UIs().SecretUI.GetPassphrase(arg, nil)
 		if err != nil {
-			postErr = err
-			return
+			return err
 		}
-
-		arg := libkb.APIArg{
-			Endpoint:    "delete",
-			SessionType: libkb.APISessionTypeREQUIRED,
-			SessionR:    a.LocalSession(),
-			Args:        libkb.NewHTTPArgs(),
-		}
-		lp.PopulateArgs(&arg.Args)
-		_, postErr = e.G().API.Post(arg)
-		if postErr != nil {
-			e.G().Log.Warning("API.Post error: %s", postErr)
-
-		}
-	}, "AccountDelete - Run")
-	if aerr != nil {
-		return aerr
-	}
-	if postErr != nil {
-		return postErr
+		passphrase = &res.Passphrase
 	}
 
-	e.G().Log.Debug("account deleted, logging out")
-	e.G().Logout()
-
-	return nil
+	err = libkb.DeleteAccount(m, username, passphrase)
+	if err != nil {
+		return err
+	}
+	m.Debug("account deleted, logging out")
+	return m.LogoutWithOptions(libkb.LogoutOptions{KeepSecrets: false, Force: true})
 }

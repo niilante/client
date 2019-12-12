@@ -6,10 +6,9 @@ package libkb
 import (
 	"strings"
 
+	"github.com/keybase/client/go/kbcrypto"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 )
-
-type AlgoType int
 
 type VerifyContext interface {
 	Debug(format string, args ...interface{})
@@ -21,7 +20,7 @@ type RawPrivateKey []byte
 type GenericKey interface {
 	GetKID() keybase1.KID
 	GetBinaryKID() keybase1.BinaryKID
-	GetAlgoType() AlgoType
+	GetAlgoType() kbcrypto.AlgoType
 
 	// Sign to an ASCII signature (which includes the message
 	// itself) and return it, along with a derived ID.
@@ -71,21 +70,13 @@ func CanEncrypt(key GenericKey) bool {
 	}
 }
 
-func skbPushAndSave(g *GlobalContext, skb *SKB, lctx LoginContext) error {
-	if lctx != nil {
-		kr, err := lctx.Keyring()
-		if err != nil {
-			return err
-		}
-		return kr.PushAndSave(skb)
+func skbPushAndSave(m MetaContext, skb *SKB) (err error) {
+	defer m.Trace("skbPushAndSave", func() error { return err })()
+	ring, err := m.Keyring()
+	if err != nil {
+		return err
 	}
-	var err error
-	kerr := g.LoginState().Keyring(func(ring *SKBKeyringFile) {
-		err = ring.PushAndSave(skb)
-	}, "PushAndSave")
-	if kerr != nil {
-		return kerr
-	}
+	err = ring.PushAndSave(skb)
 	if err != nil {
 		return err
 	}
@@ -108,7 +99,7 @@ func IsPGP(key GenericKey) bool {
 func ParseGenericKey(bundle string) (GenericKey, *Warnings, error) {
 	if isPGPBundle(bundle) {
 		// PGP key
-		return ReadOneKeyFromString(bundle)
+		return ReadOneKeyFromStringLiberal(bundle)
 	}
 	// NaCl key
 	key, err := ImportKeypairFromKID(keybase1.KIDFromString(bundle))

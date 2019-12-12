@@ -38,7 +38,7 @@ func (e *ProveCheck) Name() string {
 
 // GetPrereqs returns the engine prereqs.
 func (e *ProveCheck) Prereqs() Prereqs {
-	return Prereqs{Session: true}
+	return Prereqs{Device: true}
 }
 
 // RequiredUIs returns the required UIs.
@@ -52,17 +52,17 @@ func (e *ProveCheck) SubConsumers() []libkb.UIConsumer {
 }
 
 // Run starts the engine.
-func (e *ProveCheck) Run(ctx *Context) error {
-	found, status, state, err := libkb.CheckPostedViaSigID(e.sigID)
+func (e *ProveCheck) Run(m libkb.MetaContext) error {
+	found, status, state, err := libkb.CheckPosted(m, e.sigID)
 	if err != nil {
 		return err
 	}
 	e.found = found
-	e.status = keybase1.ProofStatus(status)
+	e.status = status
 	e.state = state
 
-	e.G().Log.Debug("looking for ChainLink for %s", e.sigID)
-	me, err := libkb.LoadMe(libkb.NewLoadUserPubOptionalArg(e.G()))
+	m.Debug("looking for ChainLink for %s", e.sigID)
+	me, err := libkb.LoadMe(libkb.NewLoadUserArgWithMetaContext(m).WithPublicKeyOptional())
 	if err != nil {
 		return err
 	}
@@ -70,12 +70,12 @@ func (e *ProveCheck) Run(ctx *Context) error {
 	if link == nil {
 		return fmt.Errorf("no chain link found for %s", e.sigID)
 	}
-	e.G().Log.Debug("chain link found: (%T)", link.Typed())
+	m.Debug("chain link found: (%T)", link.Typed())
 	if rlink, ok := link.Typed().(libkb.RemoteProofChainLink); ok {
 		e.proofText = rlink.ProofText()
-		e.G().Log.Debug("chain link proof text: %q", e.proofText)
+		m.Debug("chain link proof text: %q", e.proofText)
 	} else {
-		e.G().Log.Warning("chain link had invalid type: %T", link.Typed())
+		m.Warning("chain link had invalid type: %T", link.Typed())
 	}
 	return nil
 }

@@ -7,13 +7,14 @@ import (
 )
 
 type dispatcher interface {
-	Call(ctx context.Context, name string, arg interface{}, res interface{}, u ErrorUnwrapper) error
-	Notify(ctx context.Context, name string, arg interface{}) error
+	Call(ctx context.Context, name string, arg interface{}, res interface{},
+		ctype CompressionType, u ErrorUnwrapper, sendNotifier SendNotifier) error
+	Notify(ctx context.Context, name string, arg interface{}, sendNotifier SendNotifier) error
 	Close()
 }
 
 type dispatch struct {
-	writer encoder
+	writer *framedMsgpackEncoder
 	calls  *callContainer
 
 	// Stops all loops when closed
@@ -24,7 +25,7 @@ type dispatch struct {
 	log LogInterface
 }
 
-func newDispatch(enc encoder, calls *callContainer, l LogInterface) *dispatch {
+func newDispatch(enc *framedMsgpackEncoder, calls *callContainer, l LogInterface) *dispatch {
 	d := &dispatch{
 		writer:   enc,
 		calls:    calls,
@@ -36,21 +37,46 @@ func newDispatch(enc encoder, calls *callContainer, l LogInterface) *dispatch {
 	return d
 }
 
-func (d *dispatch) Call(ctx context.Context, name string, arg interface{}, res interface{}, u ErrorUnwrapper) error {
+func currySendNotifier(sendNotifier SendNotifier, seqid SeqNumber) func() {
+	if sendNotifier == nil {
+		return nil
+	}
+	return func() {
+		sendNotifier(seqid)
+	}
+}
+
+func (d *dispatch) Call(ctx context.Context, name string, arg interface{}, res interface{},
+	ctype CompressionType, u ErrorUnwrapper, sendNotifier SendNotifier) error {
 	profiler := d.log.StartProfiler("call %s", name)
 	defer profiler.Stop()
 
-	c := d.calls.NewCall(ctx, name, arg, res, u)
+	c := d.calls.NewCall(ctx, name, arg, res, ctype, u)
 
 	// Have to add call before encoding otherwise we'll race the response
 	d.calls.AddCall(c)
 	defer d.calls.RemoveCall(c.seqid)
+
+	var v []interface{}
+	var logCall func()
+	switch ctype {
+	case CompressionNone:
+		v = []interface{}{MethodCall, c.seqid, c.method, c.arg}
+		logCall = func() { d.log.ClientCall(c.seqid, c.method, c.arg) }
+	default:
+		arg, err := d.writer.compressData(c.ctype, c.arg)
+		if err != nil {
+			return err
+		}
+		v = []interface{}{MethodCallCompressed, c.seqid, c.ctype, c.method, arg}
+		logCall = func() { d.log.ClientCallCompressed(c.seqid, c.method, c.arg, c.ctype) }
+	}
+
 	rpcTags, _ := RpcTagsFromContext(ctx)
-	v := []interface{}{MethodCall, c.seqid, c.method, c.arg}
 	if len(rpcTags) > 0 {
 		v = append(v, rpcTags)
 	}
-	errCh := d.writer.EncodeAndWrite(ctx, v)
+	errCh := d.writer.EncodeAndWrite(ctx, v, currySendNotifier(sendNotifier, c.seqid))
 
 	// Wait for result from encode
 	select {
@@ -64,7 +90,7 @@ func (d *dispatch) Call(ctx context.Context, name string, arg interface{}, res i
 		return io.EOF
 	}
 
-	d.log.ClientCall(c.seqid, c.method, c.arg)
+	logCall()
 
 	// Wait for result from call
 	select {
@@ -78,13 +104,13 @@ func (d *dispatch) Call(ctx context.Context, name string, arg interface{}, res i
 	}
 }
 
-func (d *dispatch) Notify(ctx context.Context, name string, arg interface{}) error {
+func (d *dispatch) Notify(ctx context.Context, name string, arg interface{}, sendNotifier SendNotifier) error {
 	rpcTags, _ := RpcTagsFromContext(ctx)
 	v := []interface{}{MethodNotify, name, arg}
 	if len(rpcTags) > 0 {
 		v = append(v, rpcTags)
 	}
-	errCh := d.writer.EncodeAndWrite(ctx, v)
+	errCh := d.writer.EncodeAndWrite(ctx, v, currySendNotifier(sendNotifier, SeqNumber(-1)))
 	select {
 	case err := <-errCh:
 		if err == nil {

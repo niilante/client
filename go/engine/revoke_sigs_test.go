@@ -8,6 +8,7 @@ import (
 
 	"github.com/keybase/client/go/libkb"
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRevokeSig(t *testing.T) {
@@ -19,15 +20,15 @@ func TestRevokeSig(t *testing.T) {
 	assertNumDevicesAndKeys(tc, u, 2, 5)
 
 	secui := &libkb.TestSecretUI{Passphrase: u.Passphrase}
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI:    tc.G.UI.GetLogUI(),
 		SecretUI: secui,
 	}
 
 	// Add another PGP key, so that we have a couple to revoke. That means that
-	// signatures #5 and #6 are the ones that delegate our PGP keys.
-	const FirstPGPSigSeqno = 5
-	const SecondPGPSigSeqno = 6
+	// signatures #6 and #7 are the ones that delegate our PGP keys.
+	const FirstPGPSigSeqno = 6
+	const SecondPGPSigSeqno = 7
 
 	arg := PGPKeyImportEngineArg{
 		Gen: &libkb.PGPGenArg{
@@ -36,17 +37,19 @@ func TestRevokeSig(t *testing.T) {
 		},
 		AllowMulti: true,
 	}
-	arg.Gen.MakeAllIds()
-	pgpEngine := NewPGPKeyImportEngine(arg)
-	err := RunEngine(pgpEngine, ctx)
+	err := arg.Gen.MakeAllIds(tc.G)
+	require.NoError(t, err)
+	pgpEngine := NewPGPKeyImportEngine(tc.G, arg)
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(m, pgpEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNumDevicesAndKeys(tc, u, 2, 6)
 
 	// First test that a bad sig id fails the revoke.
-	revokeEngine := NewRevokeSigsEngine([]string{"9999"}, tc.G)
-	err = RunEngine(revokeEngine, ctx)
+	revokeEngine := NewRevokeSigsEngine(tc.G, []string{"9999"})
+	err = RunEngine2(m, revokeEngine)
 	if err == nil {
 		t.Fatal(err)
 	}
@@ -58,16 +61,16 @@ func TestRevokeSig(t *testing.T) {
 		t.Fatal(err)
 	}
 	sigID := realUser.GetSigIDFromSeqno(FirstPGPSigSeqno)
-	revokeEngine = NewRevokeSigsEngine([]string{sigID.ToString(true)}, tc.G)
-	err = RunEngine(revokeEngine, ctx)
+	revokeEngine = NewRevokeSigsEngine(tc.G, []string{sigID.ToString(true)})
+	err = RunEngine2(m, revokeEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNumDevicesAndKeys(tc, u, 2, 5) // The first PGP key is gone.
 
 	// Revoking the same key again should fail.
-	revokeEngine = NewRevokeSigsEngine([]string{sigID.ToString(true)}, tc.G)
-	err = RunEngine(revokeEngine, ctx)
+	revokeEngine = NewRevokeSigsEngine(tc.G, []string{sigID.ToString(true)})
+	err = RunEngine2(m, revokeEngine)
 	if err == nil {
 		t.Fatal("RevokeSigs should have failed, but it didn't")
 	}
@@ -77,16 +80,16 @@ func TestRevokeSig(t *testing.T) {
 	nextID := realUser.GetSigIDFromSeqno(SecondPGPSigSeqno).ToString(true)
 
 	// Short prefix should fail:
-	revokeEngine = NewRevokeSigsEngine([]string{nextID[0:4]}, tc.G)
-	err = RunEngine(revokeEngine, ctx)
+	revokeEngine = NewRevokeSigsEngine(tc.G, []string{nextID[0:4]})
+	err = RunEngine2(m, revokeEngine)
 	if err == nil {
 		t.Fatal("revoke with 4 char prefix didn't return err")
 	}
 	assertNumDevicesAndKeys(tc, u, 2, 5) // no change
 
 	// SigIDQueryMin-character prefix should work:
-	revokeEngine = NewRevokeSigsEngine([]string{nextID[0:keybase1.SigIDQueryMin]}, tc.G)
-	err = RunEngine(revokeEngine, ctx)
+	revokeEngine = NewRevokeSigsEngine(tc.G, []string{nextID[0:keybase1.SigIDQueryMin]})
+	err = RunEngine2(m, revokeEngine)
 	if err != nil {
 		t.Fatal(err)
 	}

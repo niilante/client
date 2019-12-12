@@ -6,6 +6,9 @@ package libkb
 import (
 	"crypto/sha256"
 	"errors"
+	"strings"
+
+	"github.com/btcsuite/btcutil/bech32"
 )
 
 type CryptocurrencyType int
@@ -14,17 +17,30 @@ type CryptocurrencyFamily string
 
 const (
 	CryptocurrencyTypeNone                  CryptocurrencyType = -1
-	CryptocurrencyTypeBTC                   CryptocurrencyType = 0    // 0x0
-	CryptocurrencyTypeBTCMultiSig           CryptocurrencyType = 5    // 0x5
-	CryptocurrencyTypeZCashShielded         CryptocurrencyType = 5786 // 0x169a
-	CryptocurrencyTypeZCashTransparentP2PKH CryptocurrencyType = 7352 // 0x1cb8
-	CryptocurrencyTypeZCashTransparentP2SH  CryptocurrencyType = 7357 // 0x1cbd
+	CryptocurrencyTypeBTC                   CryptocurrencyType = 0      // 0x0
+	CryptocurrencyTypeBTCMultiSig           CryptocurrencyType = 5      // 0x5
+	CryptocurrencyTypeBTCSegwit             CryptocurrencyType = 0x6263 // "bc"
+	CryptocurrencyTypeZCashShielded         CryptocurrencyType = 5786   // 0x169a
+	CryptocurrencyTypeZCashTransparentP2PKH CryptocurrencyType = 7352   // 0x1cb8
+	CryptocurrencyTypeZCashTransparentP2SH  CryptocurrencyType = 7357   // 0x1cbd
+	CryptocurrencyTypeZCashSapling          CryptocurrencyType = 0x7a73 // "zs"
 )
 
 const (
 	CryptocurrencyFamilyNone    CryptocurrencyFamily = ""
 	CryptocurrencyFamilyBitcoin CryptocurrencyFamily = "bitcoin"
 	CryptocurrencyFamilyZCash   CryptocurrencyFamily = "zcash"
+)
+
+// Wallet and cryptocurrency are separate systems.
+// Wallet links have reverse signatures, and the control secrets are in keybase.
+// Whereas Cryptocurrency links are generally public only and have no reverse sigs.
+// CryptocurrencyFamily and WalletNetwork are defined next to each other so that
+// someone will notice if they start to overlap.
+type WalletNetwork string
+
+const (
+	WalletNetworkStellar WalletNetwork = "stellar"
 )
 
 type CryptocurrencyPrefix struct {
@@ -35,12 +51,14 @@ type CryptocurrencyPrefix struct {
 
 func (p CryptocurrencyType) String() string {
 	switch p {
-	case CryptocurrencyTypeBTC, CryptocurrencyTypeBTCMultiSig:
+	case CryptocurrencyTypeBTC, CryptocurrencyTypeBTCMultiSig, CryptocurrencyTypeBTCSegwit:
 		return "bitcoin"
 	case CryptocurrencyTypeZCashShielded:
 		return "zcash.z"
 	case CryptocurrencyTypeZCashTransparentP2PKH, CryptocurrencyTypeZCashTransparentP2SH:
 		return "zcash.t"
+	case CryptocurrencyTypeZCashSapling:
+		return "zcash.s"
 	default:
 		return ""
 	}
@@ -48,9 +66,9 @@ func (p CryptocurrencyType) String() string {
 
 func (p CryptocurrencyType) ToCryptocurrencyFamily() CryptocurrencyFamily {
 	switch p {
-	case CryptocurrencyTypeBTC, CryptocurrencyTypeBTCMultiSig:
+	case CryptocurrencyTypeBTC, CryptocurrencyTypeBTCMultiSig, CryptocurrencyTypeBTCSegwit:
 		return CryptocurrencyFamilyBitcoin
-	case CryptocurrencyTypeZCashShielded, CryptocurrencyTypeZCashTransparentP2PKH, CryptocurrencyTypeZCashTransparentP2SH:
+	case CryptocurrencyTypeZCashShielded, CryptocurrencyTypeZCashTransparentP2PKH, CryptocurrencyTypeZCashTransparentP2SH, CryptocurrencyTypeZCashSapling:
 		return CryptocurrencyFamilyZCash
 	default:
 		return CryptocurrencyFamilyNone
@@ -86,7 +104,45 @@ func addressToType(b []byte) (CryptocurrencyType, error) {
 	return CryptocurrencyTypeNone, errors.New("address type not known")
 }
 
+func cryptocurrencyParseZCashSapling(s string) (CryptocurrencyType, []byte, error) {
+	hrp, decoded, err := bech32.Decode(s)
+	if err != nil {
+		return CryptocurrencyTypeNone, nil, err
+	}
+	if strings.ToLower(hrp) != "zs" {
+		return CryptocurrencyTypeNone, nil, errors.New("bad prefix after bech32 parse")
+	}
+	return CryptocurrencyTypeZCashSapling, decoded, nil
+}
+
+func cryptocurrencyIsZCashSaplingViaPrefix(s string) bool {
+	return len(s) > 3 && strings.ToLower(s[0:3]) == "zs1"
+}
+
+func cryptocurrencyParseBTCSegwit(s string) (CryptocurrencyType, []byte, error) {
+	hrp, decoded, err := bech32.Decode(s)
+	if err != nil {
+		return CryptocurrencyTypeNone, nil, err
+	}
+	if strings.ToLower(hrp) != "bc" {
+		return CryptocurrencyTypeNone, nil, errors.New("bad prefix after bech32 parse")
+	}
+	return CryptocurrencyTypeBTCSegwit, decoded, nil
+}
+
+func cryptocurrencyIsBTCSegwitViaPrefix(s string) bool {
+	return len(s) > 3 && strings.ToLower(s[0:3]) == "bc1"
+}
+
 func CryptocurrencyParseAndCheck(s string) (CryptocurrencyType, []byte, error) {
+
+	switch {
+	case cryptocurrencyIsBTCSegwitViaPrefix(s):
+		return cryptocurrencyParseBTCSegwit(s)
+	case cryptocurrencyIsZCashSaplingViaPrefix(s):
+		return cryptocurrencyParseZCashSapling(s)
+	}
+
 	buf, err := Decode58(s)
 	if err != nil {
 		return CryptocurrencyTypeNone, nil, err
@@ -120,8 +176,8 @@ func BtcAddrCheck(s string, _ *BtcOpts) (version int, pkhash []byte, err error) 
 	if err != nil {
 		return version, pkhash, err
 	}
-	if typ != CryptocurrencyTypeBTC && typ != CryptocurrencyTypeBTCMultiSig {
-		return int(CryptocurrencyTypeNone), nil, errors.New("only support BTC vanila and multisig")
+	if typ != CryptocurrencyTypeBTC && typ != CryptocurrencyTypeBTCMultiSig && typ != CryptocurrencyTypeBTCSegwit {
+		return int(CryptocurrencyTypeNone), nil, errors.New("unrecognizable btc address")
 	}
 	return int(typ), pkhash, nil
 }

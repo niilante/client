@@ -18,7 +18,7 @@ import (
 func TestLoginWithPaperKeyAlreadyIn(t *testing.T) {
 	tc := SetupEngineTest(t, "loginwithpaperkey")
 	defer tc.Cleanup()
-	_, paperkey := CreateAndSigunpLPK(tc, "login")
+	_, paperkey := CreateAndSignupLPK(tc, "login")
 
 	t.Logf("checking logged in status [before]")
 	AssertLoggedInLPK(&tc, true)
@@ -26,7 +26,7 @@ func TestLoginWithPaperKeyAlreadyIn(t *testing.T) {
 	AssertDeviceKeysLock(&tc, true)
 
 	t.Logf("running LoginWithPaperKey")
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI: tc.G.UI.GetLogUI(),
 		SecretUI: &TestSecretUIPaperKey{
 			T:                         t,
@@ -34,8 +34,9 @@ func TestLoginWithPaperKeyAlreadyIn(t *testing.T) {
 			AllowedGetPassphraseCalls: 0,
 		},
 	}
-	eng := NewLoginWithPaperKey(tc.G)
-	err := RunEngine(eng, ctx)
+	eng := NewLoginWithPaperKey(tc.G, "")
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err := RunEngine2(m, eng)
 	require.NoError(t, err)
 
 	t.Logf("checking logged in status [after]")
@@ -51,7 +52,7 @@ func TestLoginWithPaperKeyAlreadyIn(t *testing.T) {
 func TestLoginWithPaperKeyFromScratch(t *testing.T) {
 	tc := SetupEngineTest(t, "loginwithpaperkey")
 	defer tc.Cleanup()
-	_, paperkey := CreateAndSigunpLPK(tc, "login")
+	_, paperkey := CreateAndSignupLPK(tc, "login")
 
 	t.Logf("logging out")
 	Logout(tc)
@@ -62,7 +63,7 @@ func TestLoginWithPaperKeyFromScratch(t *testing.T) {
 	AssertDeviceKeysLock(&tc, false)
 
 	t.Logf("running LoginWithPaperKey")
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI: tc.G.UI.GetLogUI(),
 		SecretUI: &TestSecretUIPaperKey{
 			T:                         t,
@@ -70,47 +71,9 @@ func TestLoginWithPaperKeyFromScratch(t *testing.T) {
 			AllowedGetPassphraseCalls: 1,
 		},
 	}
-	eng := NewLoginWithPaperKey(tc.G)
-	err := RunEngine(eng, ctx)
-	require.NoError(t, err)
-
-	t.Logf("checking logged in status [after]")
-	AssertLoggedInLPK(&tc, true)
-	t.Logf("checking unlocked status [after]")
-	AssertDeviceKeysLock(&tc, true)
-}
-
-// Test logging in with paper key when
-// loggedin: false
-// unlocked: true
-// Does not ask for anything.
-func TestLoginWithPaperKeyLoggedOutAndUnlocked(t *testing.T) {
-	tc := SetupEngineTest(t, "loginwithpaperkey")
-	defer tc.Cleanup()
-	_, paperkey := CreateAndSigunpLPK(tc, "login")
-
-	t.Logf("logging out")
-	err := tc.G.LoginState().LocalSession(func(sess *libkb.Session) {
-		sess.Invalidate()
-	}, "test")
-	require.NoError(t, err)
-
-	t.Logf("checking logged in status [before]")
-	AssertLoggedInLPK(&tc, false)
-	t.Logf("checking unlocked status [before]")
-	AssertDeviceKeysLock(&tc, true)
-
-	t.Logf("running LoginWithPaperKey")
-	ctx := &Context{
-		LogUI: tc.G.UI.GetLogUI(),
-		SecretUI: &TestSecretUIPaperKey{
-			T:                         t,
-			Paperkey:                  paperkey,
-			AllowedGetPassphraseCalls: 1,
-		},
-	}
-	eng := NewLoginWithPaperKey(tc.G)
-	err = RunEngine(eng, ctx)
+	eng := NewLoginWithPaperKey(tc.G, "")
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err := RunEngine2(m, eng)
 	require.NoError(t, err)
 
 	t.Logf("checking logged in status [after]")
@@ -126,23 +89,20 @@ func TestLoginWithPaperKeyLoggedOutAndUnlocked(t *testing.T) {
 func TestLoginWithPaperKeyLoggedInAndLocked(t *testing.T) {
 	tc := SetupEngineTest(t, "loginwithpaperkey")
 	defer tc.Cleanup()
-	u, paperkey := CreateAndSigunpLPK(tc, "login")
+	u, paperkey := CreateAndSignupLPK(tc, "login")
 
 	t.Logf("locking keys")
-	err := tc.G.LoginState().Account(func(a *libkb.Account) {
-		a.ClearCachedSecretKeys()
-	}, "test")
-	require.NoError(t, err)
-	err = tc.G.SecretStoreAll.ClearSecret(libkb.NormalizedUsername(u.Username))
+	tc.SimulateServiceRestart()
+	err := tc.G.SecretStore().ClearSecret(NewMetaContextForTest(tc), libkb.NormalizedUsername(u.Username))
 	require.NoError(t, err)
 
 	t.Logf("checking logged in status [before]")
-	AssertLoggedInLPK(&tc, true)
+	AssertLoggedInLPK(&tc, false)
 	t.Logf("checking unlocked status [before]")
 	AssertDeviceKeysLock(&tc, false)
 
 	t.Logf("running LoginWithPaperKey")
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI: tc.G.UI.GetLogUI(),
 		SecretUI: &TestSecretUIPaperKey{
 			T:                         t,
@@ -150,8 +110,9 @@ func TestLoginWithPaperKeyLoggedInAndLocked(t *testing.T) {
 			AllowedGetPassphraseCalls: 1,
 		},
 	}
-	eng := NewLoginWithPaperKey(tc.G)
-	err = RunEngine(eng, ctx)
+	eng := NewLoginWithPaperKey(tc.G, "")
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err = RunEngine2(m, eng)
 	require.NoError(t, err)
 
 	t.Logf("checking logged in status [after]")
@@ -160,17 +121,89 @@ func TestLoginWithPaperKeyLoggedInAndLocked(t *testing.T) {
 	AssertDeviceKeysLock(&tc, true)
 }
 
+// full flow, login with username
+func TestLoginWithPaperKeyByUsername(t *testing.T) {
+	tc := SetupEngineTest(t, "loginwithpaperkey")
+	defer tc.Cleanup()
+	fu, paperkey := CreateAndSignupLPK(tc, "login")
+
+	t.Logf("logging out")
+	Logout(tc)
+
+	t.Logf("checking logged in status [before]")
+	AssertLoggedInLPK(&tc, false)
+	t.Logf("checking unlocked status [before]")
+	AssertDeviceKeysLock(&tc, false)
+
+	t.Logf("running LoginWithPaperKey")
+	uis := libkb.UIs{
+		LogUI: tc.G.UI.GetLogUI(),
+		SecretUI: &TestSecretUIPaperKey{
+			T:                         t,
+			Paperkey:                  paperkey,
+			AllowedGetPassphraseCalls: 1,
+		},
+	}
+	eng := NewLoginWithPaperKey(tc.G, fu.NormalizedUsername().String())
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err := RunEngine2(m, eng)
+	require.NoError(t, err)
+
+	t.Logf("checking logged in status [after]")
+	AssertLoggedInLPK(&tc, true)
+	t.Logf("checking unlocked status [after]")
+	AssertDeviceKeysLock(&tc, true)
+}
+
+// full flow, fail to login due to an invalid username
+func TestLoginWithInvalidUsername(t *testing.T) {
+	tc := SetupEngineTest(t, "loginwithpaperkey")
+	defer tc.Cleanup()
+
+	// We're creating the user to make sure that we have _some_ keys
+	// and differentiate from the no-username-passed flow
+	_, paperkey := CreateAndSignupLPK(tc, "login")
+
+	t.Logf("logging out")
+	Logout(tc)
+
+	t.Logf("checking logged in status [before]")
+	AssertLoggedInLPK(&tc, false)
+	t.Logf("checking unlocked status [before]")
+	AssertDeviceKeysLock(&tc, false)
+
+	t.Logf("running LoginWithPaperKey")
+	uis := libkb.UIs{
+		LogUI: tc.G.UI.GetLogUI(),
+		SecretUI: &TestSecretUIPaperKey{
+			T:                         t,
+			Paperkey:                  paperkey,
+			AllowedGetPassphraseCalls: 1,
+		},
+	}
+	eng := NewLoginWithPaperKey(tc.G, "doesnotexist")
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	err := RunEngine2(m, eng)
+	require.Equal(t, libkb.NotFoundError{}, err)
+
+	t.Logf("checking logged in status [after]")
+	AssertLoggedInLPK(&tc, false)
+	t.Logf("checking unlocked status [after]")
+	AssertDeviceKeysLock(&tc, false)
+}
+
 // Returns the user and paper key.
-func CreateAndSigunpLPK(tc libkb.TestContext, prefix string) (*FakeUser, string) {
+func CreateAndSignupLPK(tc libkb.TestContext, prefix string) (*FakeUser, string) {
 	u := CreateAndSignupFakeUser(tc, prefix)
 
-	ctx := &Context{
+	uis := libkb.UIs{
 		LogUI:    tc.G.UI.GetLogUI(),
 		LoginUI:  &libkb.TestLoginUI{},
 		SecretUI: &libkb.TestSecretUI{},
 	}
 	beng := NewPaperKey(tc.G)
-	if err := RunEngine(beng, ctx); err != nil {
+	m := NewMetaContextForTest(tc).WithUIs(uis)
+	if err := RunEngine2(m, beng); err != nil {
 		tc.T.Fatal(err)
 	}
 
@@ -180,18 +213,17 @@ func CreateAndSigunpLPK(tc libkb.TestContext, prefix string) (*FakeUser, string)
 }
 
 func AssertLoggedInLPK(tc *libkb.TestContext, shouldBeLoggedIn bool) {
-	sessionIsValid, err := tc.G.LoginState().LoggedInProvisionedCheck()
+	activeDeviceIsValid := tc.G.ActiveDevice.Valid()
 	t := tc.T
-	require.NoError(t, err)
 	if shouldBeLoggedIn {
-		require.Equal(t, true, sessionIsValid, "user should be logged in")
+		require.Equal(t, true, activeDeviceIsValid, "user should be logged in")
 	} else {
-		require.Equal(t, false, sessionIsValid, "user should not be logged in")
+		require.Equal(t, false, activeDeviceIsValid, "user should not be logged in")
 	}
 }
 
 func AssertDeviceKeysLock(tc *libkb.TestContext, shouldBeUnlocked bool) {
-	_, _, sk, ek := tc.G.ActiveDevice.AllFields()
+	_, _, _, sk, ek := tc.G.ActiveDevice.AllFields()
 
 	if shouldBeUnlocked {
 		require.NotNil(tc.T, sk, "device signing key should be available")

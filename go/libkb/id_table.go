@@ -9,8 +9,8 @@ import (
 	"time"
 
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
+	stellar1 "github.com/keybase/client/go/protocol/stellar1"
 	jsonw "github.com/keybase/go-jsonw"
-	"golang.org/x/net/context"
 )
 
 type TypedChainLink interface {
@@ -25,8 +25,9 @@ type TypedChainLink interface {
 	ToDisplayString() string
 	IsRevocationIsh() bool
 	IsRevoked() bool
+	IsDirectlyRevoked() bool
 	GetRole() KeyRole
-	GetSeqno() Seqno
+	GetSeqno() keybase1.Seqno
 	GetCTime() time.Time
 	GetETime() time.Time
 	GetPGPFingerprint() *PGPFingerprint
@@ -36,11 +37,14 @@ type TypedChainLink interface {
 	GetUsername() string
 	GetUID() keybase1.UID
 	GetDelegatedKid() keybase1.KID
+	GetMerkleHashMeta() (keybase1.HashMeta, error)
 	GetParentKid() keybase1.KID
 	VerifyReverseSig(ckf ComputedKeyFamily) error
-	GetMerkleSeqno() int
+	GetMerkleSeqno() keybase1.Seqno
+	GetFirstAppearedMerkleSeqnoUnverified() keybase1.Seqno
 	GetDevice() *Device
 	DoOwnNewLinkFromServerNotifications(g *GlobalContext)
+	ToSigChainLocation() keybase1.SigChainLocation
 }
 
 //=========================================================================
@@ -53,6 +57,9 @@ type GenericChainLink struct {
 
 func (g *GenericChainLink) GetSigID() keybase1.SigID {
 	return g.unpacked.sigID
+}
+func (g *GenericChainLink) ToSigChainLocation() keybase1.SigChainLocation {
+	return g.ChainLink.ToSigChainLocation()
 }
 func (g *GenericChainLink) Type() string            { return "generic" }
 func (g *GenericChainLink) ToDisplayString() string { return "unknown" }
@@ -72,7 +79,15 @@ func (g *GenericChainLink) VerifyReverseSig(ckf ComputedKeyFamily) error { retur
 func (g *GenericChainLink) IsRevocationIsh() bool                        { return false }
 func (g *GenericChainLink) GetRole() KeyRole                             { return DLGNone }
 func (g *GenericChainLink) IsRevoked() bool                              { return g.revoked }
-func (g *GenericChainLink) GetSeqno() Seqno                              { return g.unpacked.seqno }
+func (g *GenericChainLink) IsDirectlyRevoked() bool {
+	// Same as IsRevoked, but should not be overridden by subclasses (as
+	// TrackChainLink does with IsRevoked). E.g. if in the future
+	// SibkeyChainLink decides to return IsRevoked=true when the delegated
+	// sibkey has been revoked *by KID*, that could be fine, but
+	// IsDirectlyRevoked should still return false in that case.
+	return g.revoked
+}
+func (g *GenericChainLink) GetSeqno() keybase1.Seqno { return g.unpacked.seqno }
 func (g *GenericChainLink) GetPGPFingerprint() *PGPFingerprint {
 	return g.unpacked.pgpFingerprint
 }
@@ -91,7 +106,7 @@ func (g *GenericChainLink) GetUID() keybase1.UID {
 func (g *GenericChainLink) GetDevice() *Device { return nil }
 
 func (g *GenericChainLink) extractPGPFullHash(loc string) string {
-	if jw := g.payloadJSON.AtPath("body." + loc + ".full_hash"); !jw.IsNil() {
+	if jw := g.UnmarshalPayloadJSON().AtPath("body." + loc + ".full_hash"); !jw.IsNil() {
 		if ret, err := jw.GetString(); err == nil {
 			return ret
 		}
@@ -113,12 +128,13 @@ func CanonicalProofName(t TypedChainLink) string {
 //
 type RemoteProofChainLink interface {
 	TypedChainLink
+	DisplayPriorityKey() string
 	TableKey() string
 	LastWriterWins() bool
 	GetRemoteUsername() string
 	GetHostname() string
 	GetProtocol() string
-	DisplayCheck(ui IdentifyUI, lcr LinkCheckResult) error
+	DisplayCheck(m MetaContext, ui IdentifyUI, lcr LinkCheckResult) error
 	ToTrackingStatement(keybase1.ProofState) (*jsonw.Wrapper, error)
 	CheckDataJSON() *jsonw.Wrapper
 	ToIDString() string
@@ -140,6 +156,12 @@ type SocialProofChainLink struct {
 	service   string
 	username  string
 	proofText string
+	// signifies a GENERIC_SOCIAL link from a parameterized proof
+	isGeneric bool
+}
+
+func (w *WebProofChainLink) DisplayPriorityKey() string {
+	return w.protocol
 }
 
 func (w *WebProofChainLink) TableKey() string {
@@ -158,15 +180,12 @@ func (w *WebProofChainLink) GetProofType() keybase1.ProofType {
 
 func (w *WebProofChainLink) ToTrackingStatement(state keybase1.ProofState) (*jsonw.Wrapper, error) {
 	ret := w.BaseToTrackingStatement(state)
-	err := remoteProofToTrackingStatement(w, ret)
-	if err != nil {
-		ret = nil
-	}
-	return ret, err
+	remoteProofToTrackingStatement(w, ret)
+	return ret, nil
 }
 
-func (w *WebProofChainLink) DisplayCheck(ui IdentifyUI, lcr LinkCheckResult) error {
-	return ui.FinishWebProofCheck(ExportRemoteProof(w), lcr.Export())
+func (w *WebProofChainLink) DisplayCheck(m MetaContext, ui IdentifyUI, lcr LinkCheckResult) error {
+	return ui.FinishWebProofCheck(m, ExportRemoteProof(w), lcr.Export())
 }
 
 func (w *WebProofChainLink) Type() string { return "proof" }
@@ -185,12 +204,12 @@ func (w *WebProofChainLink) ProofText() string         { return w.proofText }
 func (w *WebProofChainLink) CheckDataJSON() *jsonw.Wrapper {
 	ret := jsonw.NewDictionary()
 	if w.protocol == "dns" {
-		ret.SetKey("protocol", jsonw.NewString(w.protocol))
-		ret.SetKey("domain", jsonw.NewString(w.hostname))
+		_ = ret.SetKey("protocol", jsonw.NewString(w.protocol))
+		_ = ret.SetKey("domain", jsonw.NewString(w.hostname))
 
 	} else {
-		ret.SetKey("protocol", jsonw.NewString(w.protocol+":"))
-		ret.SetKey("hostname", jsonw.NewString(w.hostname))
+		_ = ret.SetKey("protocol", jsonw.NewString(w.protocol+":"))
+		_ = ret.SetKey("hostname", jsonw.NewString(w.hostname))
 	}
 	return ret
 }
@@ -219,6 +238,9 @@ func (w *WebProofChainLink) ComputeTrackDiff(tl *TrackLookup) (res TrackDiff) {
 	return
 }
 
+func (s *SocialProofChainLink) DisplayPriorityKey() string {
+	return s.TableKey()
+}
 func (s *SocialProofChainLink) TableKey() string { return s.service }
 func (s *SocialProofChainLink) Type() string     { return "proof" }
 func (s *SocialProofChainLink) insertIntoTable(tab *IdentityTable) {
@@ -238,19 +260,10 @@ func (s *SocialProofChainLink) ToKeyValuePair() (string, string) {
 }
 func (s *SocialProofChainLink) GetService() string { return s.service }
 
-var _ RemoteProofChainLink = (*SocialProofChainLink)(nil)
-var _ RemoteProofChainLink = (*WebProofChainLink)(nil)
-
-func NewWebProofChainLink(b GenericChainLink, p, h, proofText string) *WebProofChainLink {
-	return &WebProofChainLink{b, p, h, proofText}
-}
-func NewSocialProofChainLink(b GenericChainLink, s, u, proofText string) *SocialProofChainLink {
-	return &SocialProofChainLink{
-		GenericChainLink: b,
-		service:          s,
-		username:         u,
-		proofText:        proofText,
-	}
+func (s *SocialProofChainLink) ToTrackingStatement(state keybase1.ProofState) (*jsonw.Wrapper, error) {
+	ret := s.BaseToTrackingStatement(state)
+	remoteProofToTrackingStatement(s, ret)
+	return ret, nil
 }
 
 func (s *SocialProofChainLink) ComputeTrackDiff(tl *TrackLookup) TrackDiff {
@@ -264,23 +277,40 @@ func (s *SocialProofChainLink) ComputeTrackDiff(tl *TrackLookup) TrackDiff {
 	}
 }
 
-func (s *SocialProofChainLink) DisplayCheck(ui IdentifyUI, lcr LinkCheckResult) error {
-	return ui.FinishSocialProofCheck(ExportRemoteProof(s), lcr.Export())
+func (s *SocialProofChainLink) DisplayCheck(m MetaContext, ui IdentifyUI, lcr LinkCheckResult) error {
+	return ui.FinishSocialProofCheck(m, ExportRemoteProof(s), lcr.Export())
 }
 
 func (s *SocialProofChainLink) CheckDataJSON() *jsonw.Wrapper {
 	ret := jsonw.NewDictionary()
-	ret.SetKey("username", jsonw.NewString(s.username))
-	ret.SetKey("name", jsonw.NewString(s.service))
+	_ = ret.SetKey("username", jsonw.NewString(s.username))
+	_ = ret.SetKey("name", jsonw.NewString(s.service))
 	return ret
 }
 
 func (s *SocialProofChainLink) GetProofType() keybase1.ProofType {
-	ret, found := RemoteServiceTypes[s.service]
-	if !found {
-		ret = keybase1.ProofType_NONE
+	if s.isGeneric {
+		return keybase1.ProofType_GENERIC_SOCIAL
 	}
-	return ret
+	return RemoteServiceTypes[s.service]
+}
+
+var _ RemoteProofChainLink = (*SocialProofChainLink)(nil)
+var _ RemoteProofChainLink = (*WebProofChainLink)(nil)
+
+func NewWebProofChainLink(b GenericChainLink, p, h, proofText string) *WebProofChainLink {
+	return &WebProofChainLink{b, p, h, proofText}
+}
+
+func NewSocialProofChainLink(b GenericChainLink, s, u, proofText string) *SocialProofChainLink {
+	_, found := RemoteServiceTypes[s]
+	return &SocialProofChainLink{
+		GenericChainLink: b,
+		service:          s,
+		username:         u,
+		proofText:        proofText,
+		isGeneric:        !found,
+	}
 }
 
 //=========================================================================
@@ -356,27 +386,25 @@ func ParseServiceBlock(jw *jsonw.Wrapper, pt keybase1.ProofType) (sb *ServiceBlo
 }
 
 // To be used for signatures in a user's signature chain.
-func ParseWebServiceBinding(base GenericChainLink) (ret RemoteProofChainLink, e error) {
-	jw := base.payloadJSON.AtKey("body").AtKey("service")
-
-	var sptf string
-	ptf := base.packed.AtKey("proof_text_full")
-	if !ptf.IsNil() {
-		// TODO: add test that returning on err here is ok:
-		sptf, _ = ptf.GetString()
-	}
+func ParseWebServiceBinding(base GenericChainLink) (ret RemoteProofChainLink, err error) {
+	jw := base.UnmarshalPayloadJSON().AtKey("body").AtKey("service")
+	sptf := base.unpacked.proofText
 
 	if jw.IsNil() {
-		ret, e = ParseSelfSigChainLink(base)
+		ret, err = ParseSelfSigChainLink(base)
+		if err != nil {
+			return nil, err
+		}
 	} else if sb, err := ParseServiceBlock(jw, keybase1.ProofType_NONE); err != nil {
-		e = fmt.Errorf("%s @%s", err, base.ToDebugString())
+		err = fmt.Errorf("%s @%s", err, base.ToDebugString())
+		return nil, err
 	} else if sb.social {
 		ret = NewSocialProofChainLink(base, sb.typ, sb.id, sptf)
 	} else {
 		ret = NewWebProofChainLink(base, sb.typ, sb.id, sptf)
 	}
 
-	return
+	return ret, nil
 }
 
 func remoteProofInsertIntoTable(l RemoteProofChainLink, tab *IdentityTable) {
@@ -404,15 +432,16 @@ func (l TrackChainLink) IsRemote() bool {
 }
 
 func ParseTrackChainLink(b GenericChainLink) (ret *TrackChainLink, err error) {
+	payload := b.UnmarshalPayloadJSON()
 	var tmp string
-	tmp, err = b.payloadJSON.AtPath("body.track.basics.username").GetString()
+	tmp, err = payload.AtPath("body.track.basics.username").GetString()
 	if err != nil {
 		err = fmt.Errorf("Bad track statement @%s: %s", b.ToDebugString(), err)
 		return
 	}
 	whomUsername := NewNormalizedUsername(tmp)
 
-	whomUID, err := GetUID(b.payloadJSON.AtPath("body.track.id"))
+	whomUID, err := GetUID(payload.AtPath("body.track.id"))
 	if err != nil {
 		err = fmt.Errorf("Bad track statement @%s: %s", b.ToDebugString(), err)
 		return
@@ -468,7 +497,7 @@ func (l *TrackChainLink) GetTrackedKeys() ([]TrackedKey, error) {
 
 	var res []TrackedKey
 
-	pgpKeysJSON := l.payloadJSON.AtPath("body.track.pgp_keys")
+	pgpKeysJSON := l.UnmarshalPayloadJSON().AtPath("body.track.pgp_keys")
 	if !pgpKeysJSON.IsNil() {
 		n, err := pgpKeysJSON.Len()
 		if err != nil {
@@ -490,7 +519,7 @@ func (l *TrackChainLink) GetTrackedKeys() ([]TrackedKey, error) {
 }
 
 func (l *TrackChainLink) GetEldestKID() (kid keybase1.KID, err error) {
-	keyJSON := l.payloadJSON.AtPath("body.track.key")
+	keyJSON := l.UnmarshalPayloadJSON().AtPath("body.track.key")
 	if keyJSON.IsNil() {
 		return kid, nil
 	}
@@ -502,13 +531,13 @@ func (l *TrackChainLink) GetEldestKID() (kid keybase1.KID, err error) {
 }
 
 func (l *TrackChainLink) GetTrackedUID() (keybase1.UID, error) {
-	return GetUID(l.payloadJSON.AtPath("body.track.id"))
+	return GetUID(l.UnmarshalPayloadJSON().AtPath("body.track.id"))
 }
 
 func (l *TrackChainLink) GetTrackedUsername() (NormalizedUsername, error) {
-	tmp, err := l.payloadJSON.AtPath("body.track.basics.username").GetString()
+	tmp, err := l.UnmarshalPayloadJSON().AtPath("body.track.basics.username").GetString()
 	if err != nil {
-		return NormalizedUsername(""), nil
+		return NormalizedUsername(""), fmt.Errorf("no tracked username: %v", err)
 	}
 	return NewNormalizedUsername(tmp), err
 }
@@ -518,14 +547,14 @@ func (l *TrackChainLink) IsRevoked() bool {
 }
 
 func (l *TrackChainLink) RemoteKeyProofs() *jsonw.Wrapper {
-	return l.payloadJSON.AtPath("body.track.remote_proofs")
+	return l.UnmarshalPayloadJSON().AtPath("body.track.remote_proofs")
 }
 
 func (l *TrackChainLink) ToServiceBlocks() (ret []*ServiceBlock) {
 	w := l.RemoteKeyProofs()
 	ln, err := w.Len()
 	if err != nil {
-		return
+		return nil
 	}
 	for index := 0; index < ln; index++ {
 		proof := w.AtIndex(index).AtKey("remote_key_proof")
@@ -537,9 +566,21 @@ func (l *TrackChainLink) ToServiceBlocks() (ret []*ServiceBlock) {
 	return ret
 }
 
+func (l *TrackChainLink) GetTrackedLinkSeqno() (seqno keybase1.Seqno, err error) {
+	seqnoJSON := l.UnmarshalPayloadJSON().AtPath("body.track.seq_tail.seqno")
+	if seqnoJSON.IsNil() {
+		return seqno, nil
+	}
+	i64, err := seqnoJSON.GetInt64()
+	if err != nil {
+		return seqno, err
+	}
+	return keybase1.Seqno(i64), nil
+}
+
 // convertTrackedProofToServiceBlock will take a JSON stanza from a track statement, and convert it
 // to a ServiceBlock if it fails some important sanity checks. We check that the JSON stanza is
-// well-formed, and that it's not for a defunct proof type (like Coinbase). If all succeeeds,
+// well-formed, and that it's not for a defunct proof type (like Coinbase). If all succeeds,
 // we output a service block that can entered into found-versus-tracked comparison logic.
 // The `index` provided is what index this JSON stanza is in the overall track statement.
 func convertTrackedProofToServiceBlock(g *GlobalContext, proof *jsonw.Wrapper, index int) (ret *ServiceBlock) {
@@ -556,7 +597,7 @@ func convertTrackedProofToServiceBlock(g *GlobalContext, proof *jsonw.Wrapper, i
 		return nil
 	}
 	proofType := keybase1.ProofType(t)
-	if isProofTypeDefunct(proofType) {
+	if isProofTypeDefunct(g, proofType) {
 		g.Log.Debug("Ignoring now defunct proof type %q at index=%d", proofType, index)
 		return nil
 	}
@@ -582,6 +623,49 @@ func (l *TrackChainLink) DoOwnNewLinkFromServerNotifications(g *GlobalContext) {
 //=========================================================================
 
 //=========================================================================
+// EldestChainLink
+//
+
+type EldestChainLink struct {
+	GenericChainLink
+	kid    keybase1.KID
+	device *Device
+}
+
+func ParseEldestChainLink(b GenericChainLink) (ret *EldestChainLink, err error) {
+	var kid keybase1.KID
+	var device *Device
+
+	payload := b.UnmarshalPayloadJSON()
+	if kid, err = GetKID(payload.AtPath("body.key.kid")); err != nil {
+		err = ChainLinkError{fmt.Sprintf("Bad eldest statement @%s: %s", b.ToDebugString(), err)}
+		return
+	}
+
+	if jw := payload.AtPath("body.device"); !jw.IsNil() {
+		if device, err = ParseDevice(jw, b.GetCTime()); err != nil {
+			return
+		}
+	}
+
+	ret = &EldestChainLink{b, kid, device}
+	return
+}
+
+func (s *EldestChainLink) GetDelegatedKid() keybase1.KID { return s.kid }
+func (s *EldestChainLink) GetRole() KeyRole              { return DLGSibkey }
+func (s *EldestChainLink) Type() string                  { return string(DelegationTypeEldest) }
+func (s *EldestChainLink) ToDisplayString() string       { return s.kid.String() }
+func (s *EldestChainLink) GetDevice() *Device            { return s.device }
+func (s *EldestChainLink) GetPGPFullHash() string        { return s.extractPGPFullHash("key") }
+func (s *EldestChainLink) insertIntoTable(tab *IdentityTable) {
+	tab.insertLink(s)
+}
+
+//
+//=========================================================================
+
+//=========================================================================
 // SibkeyChainLink
 //
 
@@ -596,19 +680,20 @@ func ParseSibkeyChainLink(b GenericChainLink) (ret *SibkeyChainLink, err error) 
 	var kid keybase1.KID
 	var device *Device
 
-	if kid, err = GetKID(b.payloadJSON.AtPath("body.sibkey.kid")); err != nil {
+	payload := b.UnmarshalPayloadJSON()
+	if kid, err = GetKID(payload.AtPath("body.sibkey.kid")); err != nil {
 		err = ChainLinkError{fmt.Sprintf("Bad sibkey statement @%s: %s", b.ToDebugString(), err)}
 		return
 	}
 
 	var rs string
-	if rs, err = b.payloadJSON.AtPath("body.sibkey.reverse_sig").GetString(); err != nil {
+	if rs, err = payload.AtPath("body.sibkey.reverse_sig").GetString(); err != nil {
 		err = ChainLinkError{fmt.Sprintf("Missing reverse_sig in sibkey delegation: @%s: %s",
 			b.ToDebugString(), err)}
 		return
 	}
 
-	if jw := b.payloadJSON.AtPath("body.device"); !jw.IsNil() {
+	if jw := payload.AtPath("body.device"); !jw.IsNil() {
 		if device, err = ParseDevice(jw, b.GetCTime()); err != nil {
 			return
 		}
@@ -620,7 +705,7 @@ func ParseSibkeyChainLink(b GenericChainLink) (ret *SibkeyChainLink, err error) 
 
 func (s *SibkeyChainLink) GetDelegatedKid() keybase1.KID { return s.kid }
 func (s *SibkeyChainLink) GetRole() KeyRole              { return DLGSibkey }
-func (s *SibkeyChainLink) Type() string                  { return DelegationTypeSibkey }
+func (s *SibkeyChainLink) Type() string                  { return string(DelegationTypeSibkey) }
 func (s *SibkeyChainLink) ToDisplayString() string       { return s.kid.String() }
 func (s *SibkeyChainLink) GetDevice() *Device            { return s.device }
 func (s *SibkeyChainLink) GetPGPFullHash() string        { return s.extractPGPFullHash("sibkey") }
@@ -648,42 +733,7 @@ func (s *SibkeyChainLink) VerifyReverseSig(ckf ComputedKeyFamily) (err error) {
 		return err
 	}
 
-	var p1, p2 []byte
-	if p1, _, err = key.VerifyStringAndExtract(s.G().Log, s.reverseSig); err != nil {
-		err = ReverseSigError{fmt.Sprintf("Failed to verify/extract sig: %s", err)}
-		return err
-	}
-
-	if p1, err = jsonw.Canonicalize(p1); err != nil {
-		err = ReverseSigError{fmt.Sprintf("Failed to canonicalize json: %s", err)}
-		return err
-	}
-
-	// Null-out the reverse sig on the parent
-	path := "body.sibkey.reverse_sig"
-
-	// Make a deep copy. It's dangerous to try to mutate this thing
-	// since other goroutines might be accessing it at the same time.
-	var jsonCopy *jsonw.Wrapper
-	if jsonCopy, err = makeDeepCopy(s.payloadJSON); err != nil {
-		err = ReverseSigError{fmt.Sprintf("Failed to copy payload json: %s", err)}
-		return err
-	}
-
-	jsonCopy.SetValueAtPath(path, jsonw.NewNil())
-	if p2, err = jsonCopy.Marshal(); err != nil {
-		err = ReverseSigError{fmt.Sprintf("Can't remarshal JSON statement: %s", err)}
-		return err
-	}
-
-	eq := FastByteArrayEq(p1, p2)
-
-	if !eq {
-		err = ReverseSigError{fmt.Sprintf("JSON mismatch: %s != %s",
-			string(p1), string(p2))}
-		return err
-	}
-	return nil
+	return VerifyReverseSig(s.G(), key, "body.sibkey.reverse_sig", s.UnmarshalPayloadJSON(), s.reverseSig)
 }
 
 //
@@ -698,9 +748,10 @@ type SubkeyChainLink struct {
 
 func ParseSubkeyChainLink(b GenericChainLink) (ret *SubkeyChainLink, err error) {
 	var kid, pkid keybase1.KID
-	if kid, err = GetKID(b.payloadJSON.AtPath("body.subkey.kid")); err != nil {
+	payload := b.UnmarshalPayloadJSON()
+	if kid, err = GetKID(payload.AtPath("body.subkey.kid")); err != nil {
 		err = ChainLinkError{fmt.Sprintf("Can't get KID for subkey @%s: %s", b.ToDebugString(), err)}
-	} else if pkid, err = GetKID(b.payloadJSON.AtPath("body.subkey.parent_kid")); err != nil {
+	} else if pkid, err = GetKID(payload.AtPath("body.subkey.parent_kid")); err != nil {
 		err = ChainLinkError{fmt.Sprintf("Can't get parent_kid for subkey @%s: %s", b.ToDebugString(), err)}
 	} else {
 		ret = &SubkeyChainLink{b, kid, pkid}
@@ -708,7 +759,7 @@ func ParseSubkeyChainLink(b GenericChainLink) (ret *SubkeyChainLink, err error) 
 	return
 }
 
-func (s *SubkeyChainLink) Type() string                  { return DelegationTypeSubkey }
+func (s *SubkeyChainLink) Type() string                  { return string(DelegationTypeSubkey) }
 func (s *SubkeyChainLink) ToDisplayString() string       { return s.kid.String() }
 func (s *SubkeyChainLink) GetRole() KeyRole              { return DLGSubkey }
 func (s *SubkeyChainLink) GetDelegatedKid() keybase1.KID { return s.kid }
@@ -721,34 +772,71 @@ func (s *SubkeyChainLink) insertIntoTable(tab *IdentityTable) {
 //=========================================================================
 
 //=========================================================================
-// SharedDHKeyChainLink
+// PerUserKeyChainLink
 
-type SharedDHKeyChainLink struct {
+type PerUserKeyChainLink struct {
 	GenericChainLink
-	kid        keybase1.KID
-	generation keybase1.SharedDHKeyGeneration
+	// KID of the signing key derived from the per-user-secret.
+	sigKID keybase1.KID
+	// KID of the encryption key derived from the per-user-secret.
+	encKID     keybase1.KID
+	generation keybase1.PerUserKeyGeneration
+	reverseSig string
 }
 
-func ParseSharedDHKeyChainLink(b GenericChainLink) (ret *SharedDHKeyChainLink, err error) {
-	var kid keybase1.KID
+func ParsePerUserKeyChainLink(b GenericChainLink) (ret *PerUserKeyChainLink, err error) {
+	var sigKID, encKID keybase1.KID
 	var g int
-	section := b.payloadJSON.AtPath("body.shared_dh_key")
-	if kid, err = GetKID(section.AtKey("kid")); err != nil {
-		err = ChainLinkError{fmt.Sprintf("Can't get KID for shared_dh @%s: %s", b.ToDebugString(), err)}
+	var reverseSig string
+	section := b.UnmarshalPayloadJSON().AtPath("body.per_user_key")
+	if sigKID, err = GetKID(section.AtKey("signing_kid")); err != nil {
+		err = ChainLinkError{fmt.Sprintf("Can't get signing KID for per_user_secret: @%s: %s", b.ToDebugString(), err)}
+	} else if encKID, err = GetKID(section.AtKey("encryption_kid")); err != nil {
+		err = ChainLinkError{fmt.Sprintf("Can't get encryption KID for per_user_secret: @%s: %s", b.ToDebugString(), err)}
 	} else if g, err = section.AtKey("generation").GetInt(); err != nil {
-		err = ChainLinkError{fmt.Sprintf("Can't get generation for shared_dh @%s: %s", b.ToDebugString(), err)}
+		err = ChainLinkError{fmt.Sprintf("Can't get generation for per_user_secret @%s: %s", b.ToDebugString(), err)}
+	} else if reverseSig, err = section.AtKey("reverse_sig").GetString(); err != nil {
+		err = ChainLinkError{fmt.Sprintf("Missing reverse_sig in per-user-key section: @%s: %s", b.ToDebugString(), err)}
 	} else {
-		ret = &SharedDHKeyChainLink{b, kid, keybase1.SharedDHKeyGeneration(g)}
+		ret = &PerUserKeyChainLink{b, sigKID, encKID, keybase1.PerUserKeyGeneration(g), reverseSig}
 	}
 	return ret, err
 }
 
-func (s *SharedDHKeyChainLink) Type() string                  { return DelegationTypeSharedDHKey }
-func (s *SharedDHKeyChainLink) ToDisplayString() string       { return s.kid.String() }
-func (s *SharedDHKeyChainLink) GetRole() KeyRole              { return DLGSharedDHKey }
-func (s *SharedDHKeyChainLink) GetDelegatedKid() keybase1.KID { return s.kid }
-func (s *SharedDHKeyChainLink) insertIntoTable(tab *IdentityTable) {
+func (s *PerUserKeyChainLink) Type() string { return string(LinkTypePerUserKey) }
+func (s *PerUserKeyChainLink) ToDisplayString() string {
+	return s.sigKID.String() + " + " + s.encKID.String()
+}
+
+// Don't consider per-user-keys as normal delegations. Because they have
+// multiple kids and initially can't delegate further. They are handled
+// separately by the sigchain loader.
+func (s *PerUserKeyChainLink) GetRole() KeyRole                    { return DLGNone }
+func (s *PerUserKeyChainLink) GetDelegatedKid() (res keybase1.KID) { return }
+func (s *PerUserKeyChainLink) insertIntoTable(tab *IdentityTable) {
 	tab.insertLink(s)
+}
+
+func (s *PerUserKeyChainLink) ToPerUserKey() keybase1.PerUserKey {
+	return keybase1.PerUserKey{
+		Gen:         int(s.generation),
+		Seqno:       s.GetSeqno(),
+		SigKID:      s.sigKID,
+		EncKID:      s.encKID,
+		SignedByKID: s.GetKID(),
+	}
+}
+
+//-------------------------------------
+
+// VerifyReverseSig checks a SibkeyChainLink's reverse signature using the ComputedKeyFamily provided.
+func (s *PerUserKeyChainLink) VerifyReverseSig(_ ComputedKeyFamily) (err error) {
+	key, err := ImportNaclSigningKeyPairFromHex(s.sigKID.String())
+	if err != nil {
+		return fmt.Errorf("Invalid per-user signing KID: %s", s.sigKID)
+	}
+
+	return VerifyReverseSig(s.G(), key, "body.per_user_key.reverse_sig", s.UnmarshalPayloadJSON(), s.reverseSig)
 }
 
 //
@@ -757,7 +845,7 @@ func (s *SharedDHKeyChainLink) insertIntoTable(tab *IdentityTable) {
 //
 
 // PGPUpdateChainLink represents a chain link which marks a new version of a
-// PGP key as current. The KID and a new new full hash are included in the
+// PGP key as current. The KID and a new full hash are included in the
 // pgp_update section of the body.
 type PGPUpdateChainLink struct {
 	GenericChainLink
@@ -769,7 +857,7 @@ type PGPUpdateChainLink struct {
 func ParsePGPUpdateChainLink(b GenericChainLink) (ret *PGPUpdateChainLink, err error) {
 	var kid keybase1.KID
 
-	pgpUpdate := b.payloadJSON.AtPath("body.pgp_update")
+	pgpUpdate := b.UnmarshalPayloadJSON().AtPath("body.pgp_update")
 
 	if pgpUpdate.IsNil() {
 		err = ChainLinkError{fmt.Sprintf("missing pgp_update section @%s", b.ToDebugString())}
@@ -792,7 +880,7 @@ func ParsePGPUpdateChainLink(b GenericChainLink) (ret *PGPUpdateChainLink, err e
 	return
 }
 
-func (l *PGPUpdateChainLink) Type() string                       { return DelegationTypePGPUpdate }
+func (l *PGPUpdateChainLink) Type() string                       { return string(DelegationTypePGPUpdate) }
 func (l *PGPUpdateChainLink) ToDisplayString() string            { return l.kid.String() }
 func (l *PGPUpdateChainLink) GetPGPFullHash() string             { return l.extractPGPFullHash("pgp_update") }
 func (l *PGPUpdateChainLink) insertIntoTable(tab *IdentityTable) { tab.insertLink(l) }
@@ -808,7 +896,7 @@ type DeviceChainLink struct {
 
 func ParseDeviceChainLink(b GenericChainLink) (ret *DeviceChainLink, err error) {
 	var dobj *Device
-	if dobj, err = ParseDevice(b.payloadJSON.AtPath("body.device"), b.GetCTime()); err != nil {
+	if dobj, err = ParseDevice(b.UnmarshalPayloadJSON().AtPath("body.device"), b.GetCTime()); err != nil {
 	} else {
 		ret = &DeviceChainLink{b, dobj}
 	}
@@ -820,6 +908,96 @@ func (s *DeviceChainLink) insertIntoTable(tab *IdentityTable) {
 	tab.insertLink(s)
 }
 
+//
+//=========================================================================
+// WalletStellarChainLink
+
+type WalletStellarChainLink struct {
+	GenericChainLink
+	addressKID keybase1.KID
+	reverseSig string
+	address    string
+	network    string
+	name       string
+}
+
+func ParseWalletStellarChainLink(b GenericChainLink) (ret *WalletStellarChainLink, err error) {
+	ret = &WalletStellarChainLink{GenericChainLink: b}
+	mkErr := func(format string, args ...interface{}) error {
+		return ChainLinkError{fmt.Sprintf(format, args...) + fmt.Sprintf(" @%s", b.ToDebugString())}
+	}
+	bodyW := b.UnmarshalPayloadJSON()
+	walletSection := bodyW.AtPath("body.wallet")
+	walletKeySection := bodyW.AtPath("body.wallet_key")
+	ret.addressKID, err = GetKID(walletKeySection.AtKey("kid"))
+	if err != nil {
+		return nil, mkErr("Can't get address KID: %v", err)
+	}
+	ret.reverseSig, err = walletKeySection.AtKey("reverse_sig").GetString()
+	if err != nil {
+		return nil, mkErr("Missing reverse_sig: %v", err)
+	}
+	ret.address, err = walletSection.AtKey("address").GetString()
+	if err != nil {
+		return nil, mkErr("Can't get address: %v", err)
+	}
+	ret.network, err = walletSection.AtKey("network").GetString()
+	if err != nil {
+		return nil, mkErr("Can't get address network: %v", err)
+	}
+	nameOption := walletSection.AtKey("name")
+	if !nameOption.IsNil() {
+		ret.name, err = nameOption.GetString()
+		if err != nil {
+			return nil, mkErr("Can't get account name: %v", err)
+		}
+	}
+
+	// Check the network and that the keys match.
+	if ret.network != string(WalletNetworkStellar) {
+		return nil, mkErr("Unsupported wallet network '%v'", ret.network)
+	}
+	accountKey, err := MakeNaclSigningKeyPairFromStellarAccountID(stellar1.AccountID(ret.address))
+	if err != nil {
+		return nil, mkErr("Invalid stellar account address: '%v'", ret.address)
+	}
+	if !ret.addressKID.Equal(accountKey.GetKID()) {
+		return nil, mkErr("Mismatched wallet keys: '%v' <-/-> '%v", ret.addressKID, ret.address)
+	}
+
+	return ret, nil
+}
+
+func (s *WalletStellarChainLink) Type() string { return string(LinkTypeWalletStellar) }
+func (s *WalletStellarChainLink) ToDisplayString() string {
+	return fmt.Sprintf("%v %v %v %v", s.network, s.name, s.address, s.addressKID.String())
+}
+func (s *WalletStellarChainLink) insertIntoTable(tab *IdentityTable) {
+	tab.insertLink(s)
+	if tab.stellar == nil || tab.stellar.GetSeqno() <= s.GetSeqno() {
+		tab.stellar = s
+	}
+}
+
+// VerifyReverseSig checks a SibkeyChainLink's reverse signature using the ComputedKeyFamily provided.
+func (s *WalletStellarChainLink) VerifyReverseSig(_ ComputedKeyFamily) (err error) {
+	key, err := ImportNaclSigningKeyPairFromHex(s.addressKID.String())
+	if err != nil {
+		return fmt.Errorf("Invalid wallet reverse signing KID: %s", s.addressKID)
+	}
+
+	return VerifyReverseSig(s.G(), key, "body.wallet_key.reverse_sig", s.UnmarshalPayloadJSON(), s.reverseSig)
+}
+
+func (s *WalletStellarChainLink) Display(m MetaContext, ui IdentifyUI) error {
+	return ui.DisplayStellarAccount(m, keybase1.StellarAccount{
+		AccountID:         s.address,
+		FederationAddress: fmt.Sprintf("%s*keybase.io", s.GetUsername()),
+		SigID:             s.GetSigID(),
+	})
+}
+
+//
 //=========================================================================
 // UntrackChainLink
 
@@ -831,14 +1009,15 @@ type UntrackChainLink struct {
 
 func ParseUntrackChainLink(b GenericChainLink) (ret *UntrackChainLink, err error) {
 	var tmp string
-	tmp, err = b.payloadJSON.AtPath("body.untrack.basics.username").GetString()
+	payload := b.UnmarshalPayloadJSON()
+	tmp, err = payload.AtPath("body.untrack.basics.username").GetString()
 	if err != nil {
 		err = fmt.Errorf("Bad track statement @%s: %s", b.ToDebugString(), err)
 		return
 	}
 	whomUsername := NewNormalizedUsername(tmp)
 
-	whomUID, err := GetUID(b.payloadJSON.AtPath("body.untrack.id"))
+	whomUID, err := GetUID(payload.AtPath("body.untrack.id"))
 	if err != nil {
 		err = fmt.Errorf("Bad track statement @%s: %s", b.ToDebugString(), err)
 		return
@@ -893,7 +1072,7 @@ func (c CryptocurrencyChainLink) GetAddress() string {
 func ParseCryptocurrencyChainLink(b GenericChainLink) (
 	cl *CryptocurrencyChainLink, err error) {
 
-	jw := b.payloadJSON.AtPath("body.cryptocurrency")
+	jw := b.UnmarshalPayloadJSON().AtPath("body.cryptocurrency")
 	var styp, addr string
 	var pkhash []byte
 
@@ -911,7 +1090,7 @@ func ParseCryptocurrencyChainLink(b GenericChainLink) (
 		return
 	}
 	if styp != typ.String() {
-		err = fmt.Errorf("Got %q type but wanted %q at: %s", styp, typ.String(), err)
+		err = fmt.Errorf("Got %q type but wanted %q at: %s", styp, typ.String(), b.ToDebugString())
 		return
 	}
 
@@ -928,8 +1107,8 @@ func (c *CryptocurrencyChainLink) insertIntoTable(tab *IdentityTable) {
 	tab.cryptocurrency = append(tab.cryptocurrency, c)
 }
 
-func (c CryptocurrencyChainLink) Display(ui IdentifyUI) error {
-	return ui.DisplayCryptocurrency(c.Export())
+func (c CryptocurrencyChainLink) Display(m MetaContext, ui IdentifyUI) error {
+	return ui.DisplayCryptocurrency(m, c.Export())
 }
 
 //
@@ -945,7 +1124,7 @@ type RevokeChainLink struct {
 
 func ParseRevokeChainLink(b GenericChainLink) (ret *RevokeChainLink, err error) {
 	var device *Device
-	if jw := b.payloadJSON.AtPath("body.device"); !jw.IsNil() {
+	if jw := b.UnmarshalPayloadJSON().AtPath("body.device"); !jw.IsNil() {
 		if device, err = ParseDevice(jw, b.GetCTime()); err != nil {
 			return
 		}
@@ -958,7 +1137,7 @@ func (r *RevokeChainLink) Type() string { return "revoke" }
 
 func (r *RevokeChainLink) ToDisplayString() string {
 	v := r.GetRevocations()
-	list := make([]string, len(v), len(v))
+	list := make([]string, len(v))
 	for i, s := range v {
 		list[i] = s.ToString(true)
 	}
@@ -991,16 +1170,17 @@ func (s *SelfSigChainLink) ToDisplayString() string { return s.unpacked.username
 func (s *SelfSigChainLink) insertIntoTable(tab *IdentityTable) {
 	tab.insertLink(s)
 }
-func (s *SelfSigChainLink) TableKey() string          { return "keybase" }
-func (s *SelfSigChainLink) LastWriterWins() bool      { return true }
-func (s *SelfSigChainLink) GetRemoteUsername() string { return s.GetUsername() }
-func (s *SelfSigChainLink) GetHostname() string       { return "" }
-func (s *SelfSigChainLink) GetProtocol() string       { return "" }
-func (s *SelfSigChainLink) ProofText() string         { return "" }
+func (s *SelfSigChainLink) DisplayPriorityKey() string { return s.TableKey() }
+func (s *SelfSigChainLink) TableKey() string           { return "keybase" }
+func (s *SelfSigChainLink) LastWriterWins() bool       { return true }
+func (s *SelfSigChainLink) GetRemoteUsername() string  { return s.GetUsername() }
+func (s *SelfSigChainLink) GetHostname() string        { return "" }
+func (s *SelfSigChainLink) GetProtocol() string        { return "" }
+func (s *SelfSigChainLink) ProofText() string          { return "" }
 
 func (s *SelfSigChainLink) GetPGPFullHash() string { return s.extractPGPFullHash("key") }
 
-func (s *SelfSigChainLink) DisplayCheck(ui IdentifyUI, lcr LinkCheckResult) error {
+func (s *SelfSigChainLink) DisplayCheck(m MetaContext, ui IdentifyUI, lcr LinkCheckResult) error {
 	return nil
 }
 
@@ -1020,7 +1200,7 @@ func (s *SelfSigChainLink) ComputeTrackDiff(tl *TrackLookup) TrackDiff { return 
 func (s *SelfSigChainLink) GetProofType() keybase1.ProofType { return keybase1.ProofType_KEYBASE }
 
 func (s *SelfSigChainLink) ParseDevice() (err error) {
-	if jw := s.payloadJSON.AtPath("body.device"); !jw.IsNil() {
+	if jw := s.UnmarshalPayloadJSON().AtPath("body.device"); !jw.IsNil() {
 		s.device, err = ParseDevice(jw, s.GetCTime())
 	}
 	return err
@@ -1046,15 +1226,17 @@ func ParseSelfSigChainLink(base GenericChainLink) (ret *SelfSigChainLink, err er
 type IdentityTable struct {
 	Contextified
 	sigChain         *SigChain
-	revocations      map[keybase1.SigID]bool
-	links            map[keybase1.SigID]TypedChainLink
+	revocations      map[keybase1.SigIDMapKey]bool
+	links            map[keybase1.SigIDMapKey]TypedChainLink
 	remoteProofLinks *RemoteProofLinks
 	tracks           map[NormalizedUsername][]*TrackChainLink
 	Order            []TypedChainLink
 	sigHints         *SigHints
 	cryptocurrency   []*CryptocurrencyChainLink
+	stellar          *WalletStellarChainLink
 	checkResult      *CheckResult
 	eldest           keybase1.KID
+	hasStubs         bool
 }
 
 func (idt *IdentityTable) GetActiveProofsFor(st ServiceType) (ret []RemoteProofChainLink) {
@@ -1065,12 +1247,16 @@ func (idt *IdentityTable) GetTrackMap() map[NormalizedUsername][]*TrackChainLink
 	return idt.tracks
 }
 
+func (idt *IdentityTable) HasStubs() bool {
+	return idt.hasStubs
+}
+
 func (idt *IdentityTable) insertLink(l TypedChainLink) {
-	idt.links[l.GetSigID()] = l
+	idt.links[l.GetSigID().ToMapKey()] = l
 	idt.Order = append(idt.Order, l)
 	for _, rev := range l.GetRevocations() {
-		idt.revocations[rev] = true
-		if targ, found := idt.links[rev]; !found {
+		idt.revocations[rev.ToMapKey()] = true
+		if targ, found := idt.links[rev.ToMapKey()]; !found {
 			idt.G().Log.Warning("Can't revoke signature %s @%s", rev, l.ToDebugString())
 		} else {
 			targ.markRevoked(l)
@@ -1089,13 +1275,13 @@ func NewTypedChainLink(cl *ChainLink) (ret TypedChainLink, w Warning) {
 
 	base := GenericChainLink{cl}
 
-	s, err := cl.payloadJSON.AtKey("body").AtKey("type").GetString()
+	s, err := cl.UnmarshalPayloadJSON().AtKey("body").AtKey("type").GetString()
 	if len(s) == 0 || err != nil {
 		err = fmt.Errorf("No type in signature @%s", base.ToDebugString())
 	} else {
 		switch s {
-		case "eldest":
-			ret, err = ParseSelfSigChainLink(base)
+		case string(DelegationTypeEldest):
+			ret, err = ParseEldestChainLink(base)
 		case "web_service_binding":
 			ret, err = ParseWebServiceBinding(base)
 		case "track":
@@ -1106,16 +1292,18 @@ func NewTypedChainLink(cl *ChainLink) (ret TypedChainLink, w Warning) {
 			ret, err = ParseCryptocurrencyChainLink(base)
 		case "revoke":
 			ret, err = ParseRevokeChainLink(base)
-		case DelegationTypeSibkey:
+		case string(DelegationTypeSibkey):
 			ret, err = ParseSibkeyChainLink(base)
-		case DelegationTypeSubkey:
+		case string(DelegationTypeSubkey):
 			ret, err = ParseSubkeyChainLink(base)
-		case DelegationTypePGPUpdate:
+		case string(DelegationTypePGPUpdate):
 			ret, err = ParsePGPUpdateChainLink(base)
-		case DelegationTypeSharedDHKey:
-			ret, err = ParseSharedDHKeyChainLink(base)
+		case "per_user_key":
+			ret, err = ParsePerUserKeyChainLink(base)
 		case "device":
 			ret, err = ParseDeviceChainLink(base)
+		case string(LinkTypeWalletStellar):
+			ret, err = ParseWalletStellarChainLink(base)
 		default:
 			err = fmt.Errorf("Unknown signature type %s @%s", s, base.ToDebugString())
 		}
@@ -1130,45 +1318,55 @@ func NewTypedChainLink(cl *ChainLink) (ret TypedChainLink, w Warning) {
 
 	// Basically we never fail, since worse comes to worse, we treat
 	// unknown signatures as "generic" and can still display them
-	return
+	return ret, w
 }
 
-func NewIdentityTable(g *GlobalContext, eldest keybase1.KID, sc *SigChain, h *SigHints) (*IdentityTable, error) {
+func NewIdentityTable(m MetaContext, eldest keybase1.KID, sc *SigChain, h *SigHints) (*IdentityTable, error) {
 	ret := &IdentityTable{
-		Contextified:     NewContextified(g),
+		Contextified:     NewContextified(m.G()),
 		sigChain:         sc,
-		revocations:      make(map[keybase1.SigID]bool),
-		links:            make(map[keybase1.SigID]TypedChainLink),
-		remoteProofLinks: NewRemoteProofLinks(),
+		revocations:      make(map[keybase1.SigIDMapKey]bool),
+		links:            make(map[keybase1.SigIDMapKey]TypedChainLink),
+		remoteProofLinks: NewRemoteProofLinks(m.G()),
 		tracks:           make(map[NormalizedUsername][]*TrackChainLink),
 		sigHints:         h,
 		eldest:           eldest,
 	}
-	err := ret.populate()
+	err := ret.populate(m)
 	return ret, err
 }
 
-func (idt *IdentityTable) populate() (err error) {
-	defer idt.G().Trace("IdentityTable::populate", func() error { return err })()
+func (idt *IdentityTable) populate(m MetaContext) (err error) {
+	defer m.Trace("IdentityTable#populate", func() error { return err })()
 
 	var links []*ChainLink
-	if links, err = idt.sigChain.GetCurrentSubchain(idt.eldest); err != nil {
+	if links, err = idt.sigChain.GetCurrentSubchain(m, idt.eldest); err != nil {
 		return err
 	}
 
 	for _, link := range links {
-		if isBad, reason := link.IsBad(); isBad {
-			idt.G().Log.Debug("Ignoring bad chain link with sig ID %s: %s", link.GetSigID(), reason)
+		isBad, reason, err := link.IsBad()
+		if err != nil {
+			return err
+		}
+		if isBad {
+			m.Debug("Ignoring bad chain link with linkID %s: %s", link.LinkID(), reason)
 			continue
 		}
 		if link.IsStubbed() {
+			idt.hasStubs = true
 			continue
 		}
+
 		tcl, w := NewTypedChainLink(link)
-		tcl.insertIntoTable(idt)
 		if w != nil {
 			w.Warn(idt.G())
 		}
+		// If it's an unknown link type, then it's OK to ignore it
+		if tcl == nil {
+			continue
+		}
+		tcl.insertIntoTable(idt)
 		if link.isOwnNewLinkFromServer {
 			link.isOwnNewLinkFromServer = false
 			tcl.DoOwnNewLinkFromServerNotifications(idt.G())
@@ -1177,13 +1375,18 @@ func (idt *IdentityTable) populate() (err error) {
 	return nil
 }
 
-func isProofTypeDefunct(typ keybase1.ProofType) bool {
-	return typ == keybase1.ProofType_COINBASE
+func isProofTypeDefunct(g *GlobalContext, typ keybase1.ProofType) bool {
+	switch typ {
+	case keybase1.ProofType_COINBASE:
+		return true
+	default:
+		return false
+	}
 }
 
 func (idt *IdentityTable) insertRemoteProof(link RemoteProofChainLink) {
 
-	if isProofTypeDefunct(link.GetProofType()) {
+	if isProofTypeDefunct(idt.G(), link.GetProofType()) {
 		idt.G().Log.Debug("Ignoring now-defunct proof: %s", link.ToDebugString())
 		return
 	}
@@ -1270,6 +1473,15 @@ func (idt *IdentityTable) AllActiveCryptocurrency() []CryptocurrencyChainLink {
 	return ret
 }
 
+func (idt *IdentityTable) HasActiveCryptocurrencyFamily(family CryptocurrencyFamily) bool {
+	for _, link := range idt.AllActiveCryptocurrency() {
+		if link.typ.ToCryptocurrencyFamily() == family {
+			return true
+		}
+	}
+	return false
+}
+
 func (idt *IdentityTable) GetRevokedCryptocurrencyForTesting() []CryptocurrencyChainLink {
 	ret := []CryptocurrencyChainLink{}
 	for _, link := range idt.cryptocurrency {
@@ -1278,6 +1490,22 @@ func (idt *IdentityTable) GetRevokedCryptocurrencyForTesting() []CryptocurrencyC
 		}
 	}
 	return ret
+}
+
+// Return the active stellar public address for a user.
+// Returns nil if there is none or it has not been loaded.
+func (idt *IdentityTable) StellarAccountID() *stellar1.AccountID {
+	// Return the account ID of the latest link with the network set to stellar.
+	if idt.stellar == nil {
+		return nil
+	}
+	link := idt.stellar
+	if link.network == string(WalletNetworkStellar) {
+		// Something should have already validated link.address as a stellar account ID.
+		tmp := stellar1.AccountID(link.address)
+		return &tmp
+	}
+	return nil
 }
 
 func (idt *IdentityTable) Len() int {
@@ -1295,17 +1523,23 @@ const (
 	IdentifyTableModeActive  IdentifyTableMode = iota
 )
 
-func (idt *IdentityTable) Identify(ctx context.Context, is IdentifyState, forceRemoteCheck bool, ui IdentifyUI, ccl CheckCompletedListener, itm IdentifyTableMode) error {
+func (idt *IdentityTable) Identify(m MetaContext, is IdentifyState, forceRemoteCheck bool, ui IdentifyUI, ccl CheckCompletedListener, itm IdentifyTableMode) error {
 	errs := make(chan error, len(is.res.ProofChecks))
 	for _, lcr := range is.res.ProofChecks {
 		go func(l *LinkCheckResult) {
-			errs <- idt.identifyActiveProof(ctx, l, is, forceRemoteCheck, ui, ccl, itm)
+			errs <- idt.identifyActiveProof(m, l, is, forceRemoteCheck, ui, ccl, itm)
 		}(lcr)
 	}
 
 	allAcc := idt.AllActiveCryptocurrency()
 	for _, acc := range allAcc {
-		if err := acc.Display(ui); err != nil {
+		if err := acc.Display(m, ui); err != nil {
+			return err
+		}
+	}
+
+	if stellar := idt.stellar; stellar != nil {
+		if err := stellar.Display(m, ui); err != nil {
 			return err
 		}
 	}
@@ -1322,16 +1556,20 @@ func (idt *IdentityTable) Identify(ctx context.Context, is IdentifyState, forceR
 
 //=========================================================================
 
-func (idt *IdentityTable) identifyActiveProof(ctx context.Context, lcr *LinkCheckResult, is IdentifyState, forceRemoteCheck bool, ui IdentifyUI, ccl CheckCompletedListener, itm IdentifyTableMode) error {
-	idt.proofRemoteCheck(ctx, is.HasPreviousTrack(), forceRemoteCheck, lcr, itm)
+func (idt *IdentityTable) identifyActiveProof(m MetaContext, lcr *LinkCheckResult, is IdentifyState, forceRemoteCheck bool, ui IdentifyUI, ccl CheckCompletedListener, itm IdentifyTableMode) error {
+	idt.proofRemoteCheck(m, is.HasPreviousTrack(), forceRemoteCheck, lcr, itm)
 	if ccl != nil {
 		ccl.CCLCheckCompleted(lcr)
 	}
-	return lcr.link.DisplayCheck(ui, *lcr)
+	return lcr.link.DisplayCheck(m, ui, *lcr)
 }
 
 type LinkCheckResult struct {
-	hint                 *SigHint
+	hint *SigHint
+	// The client checker fills this in with any knowledge it has about hint
+	// metadata if it is able to derive it without server help. This value is
+	// preferred to the plain old server-trust `hint`
+	verifiedHint         *SigHint
 	cached               *CheckResult
 	err                  ProofError
 	snoozedErr           ProofError
@@ -1345,13 +1583,20 @@ type LinkCheckResult struct {
 	torWarning           bool
 }
 
-func (l LinkCheckResult) GetDiff() TrackDiff            { return l.diff }
-func (l LinkCheckResult) GetError() error               { return l.err }
-func (l LinkCheckResult) GetHint() *SigHint             { return l.hint }
+func (l LinkCheckResult) GetDiff() TrackDiff        { return l.diff }
+func (l LinkCheckResult) GetError() error           { return l.err }
+func (l LinkCheckResult) GetProofError() ProofError { return l.err }
+func (l LinkCheckResult) GetHint() *SigHint {
+	if l.verifiedHint != nil {
+		return l.verifiedHint
+	}
+	return l.hint
+}
 func (l LinkCheckResult) GetCached() *CheckResult       { return l.cached }
 func (l LinkCheckResult) GetPosition() int              { return l.position }
 func (l LinkCheckResult) GetTorWarning() bool           { return l.torWarning }
 func (l LinkCheckResult) GetLink() RemoteProofChainLink { return l.link }
+func (l LinkCheckResult) GetRemoteDiff() TrackDiff      { return l.remoteDiff }
 
 // ComputeRemoteDiff takes as input three tracking results: the permanent track,
 // the local temporary track, and the one it observed remotely. It favors the
@@ -1373,12 +1618,12 @@ func (idt *IdentityTable) ComputeRemoteDiff(tracked, trackedTmp, observed keybas
 	return ret
 }
 
-func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack, forceRemoteCheck bool, res *LinkCheckResult, itm IdentifyTableMode) {
+func (idt *IdentityTable) proofRemoteCheck(m MetaContext, hasPreviousTrack, forceRemoteCheck bool, res *LinkCheckResult, itm IdentifyTableMode) {
 	p := res.link
 
-	idt.G().Log.CDebugf(ctx, "+ RemoteCheckProof %s", p.ToDebugString())
+	m.Debug("+ RemoteCheckProof %s", p.ToDebugString())
 	doCache := false
-	pvlHashUsed := PvlKitHash("")
+	pvlHashUsed := keybase1.MerkleStoreKitHash("")
 	sid := p.GetSigID()
 
 	defer func() {
@@ -1396,13 +1641,13 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 		}
 
 		if doCache {
-			idt.G().Log.CDebugf(ctx, "| Caching results under key=%s pvlHash=%s", sid, pvlHashUsed)
-			if cacheErr := idt.G().ProofCache.Put(sid, res.err, pvlHashUsed); cacheErr != nil {
-				idt.G().Log.CWarningf(ctx, "proof cache put error: %s", cacheErr)
+			m.Debug("| Caching results under key=%s pvlHash=%s", sid, pvlHashUsed)
+			if cacheErr := idt.G().ProofCache.Put(sid, res, pvlHashUsed); cacheErr != nil {
+				m.Warning("proof cache put error: %s", cacheErr)
 			}
 		}
 
-		idt.G().Log.CDebugf(ctx, "- RemoteCheckProof %s", p.ToDebugString())
+		m.Debug("- RemoteCheckProof %s", p.ToDebugString())
 	}()
 
 	pvlSource := idt.G().GetPvlSource()
@@ -1410,7 +1655,7 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 		res.err = NewProofError(keybase1.ProofStatus_MISSING_PVL, "no pvl source for proof verification")
 		return
 	}
-	pvlU, err := pvlSource.GetPVL(ctx)
+	pvlU, err := pvlSource.GetLatestEntry(m)
 	if err != nil {
 		res.err = NewProofError(keybase1.ProofStatus_MISSING_PVL, "error getting pvl: %s", err)
 		return
@@ -1427,24 +1672,25 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 
 	// Call the Global context's version of what a proof checker is. We might want to stub it out
 	// for the purposes of testing.
-	pc, res.err = MakeProofChecker(idt.G().Services, p)
+	pc, res.err = MakeProofChecker(m, m.G().GetProofServices(), p)
 
-	if res.err != nil {
+	if res.err != nil || pc == nil {
 		return
 	}
 
-	if idt.G().Env.GetTorMode().Enabled() {
+	if m.G().Env.GetTorMode().Enabled() {
 		if e := pc.GetTorError(); e != nil {
 			res.torWarning = true
 		}
 	}
 
 	if !forceRemoteCheck {
-		res.cached = idt.G().ProofCache.Get(sid, pvlU.Hash)
-		idt.G().Log.CDebugf(ctx, "| Proof cache lookup for %s: %+v", sid, res.cached)
+		res.cached = m.G().ProofCache.Get(sid, pvlU.Hash)
+		m.Debug("| Proof cache lookup for %s: %+v", sid, res.cached)
 		if res.cached != nil && res.cached.Freshness() == keybase1.CheckResultFreshness_FRESH {
 			res.err = res.cached.Status
-			idt.G().Log.CDebugf(ctx, "| Early exit after proofCache hit for %s", sid)
+			res.verifiedHint = res.cached.VerifiedHint
+			m.Debug("| Early exit after proofCache hit for %s", sid)
 			return
 		}
 	}
@@ -1460,7 +1706,11 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 	if (hasPreviousTrack && res.trackedProofState != keybase1.ProofState_NONE && res.trackedProofState != keybase1.ProofState_UNCHECKED) || itm == IdentifyTableModeActive {
 		pcm = ProofCheckerModeActive
 	}
-	res.err = pc.CheckStatus(idt.G().CloneWithNetContext(ctx), *res.hint, pcm, pvlU)
+	var hint SigHint
+	if res.hint != nil {
+		hint = *res.hint
+	}
+	res.verifiedHint, res.err = pc.CheckStatus(m, hint, pcm, pvlU)
 
 	// If no error than all good
 	if res.err == nil {
@@ -1472,7 +1722,7 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 	// not to cache it.
 	if ProofErrorIsSoft(res.err) && res.cached != nil && res.cached.Status == nil &&
 		res.cached.Freshness() != keybase1.CheckResultFreshness_RANCID {
-		idt.G().Log.CDebugf(ctx, "| Got soft error (%s) but returning success (last seen at %s)",
+		m.Debug("| Got soft error (%s) but returning success (last seen at %s)",
 			res.err.Error(), res.cached.Time)
 		res.snoozedErr = res.err
 		res.err = nil
@@ -1480,7 +1730,47 @@ func (idt *IdentityTable) proofRemoteCheck(ctx context.Context, hasPreviousTrack
 		return
 	}
 
-	idt.G().Log.CDebugf(ctx, "| Check status (%s) failed with error: %s", p.ToDebugString(), res.err.Error())
+	m.Debug("| Check status (%s) failed with error: %s", p.ToDebugString(), res.err.Error())
+}
 
-	return
+// VerifyReverseSig checks reverse signature using the key provided.
+// does not modify `payload`.
+// `path` is the path to the reverse sig spot to null before checking.
+func VerifyReverseSig(g *GlobalContext, key GenericKey, path string, payload *jsonw.Wrapper, reverseSig string) (err error) {
+	var p1, p2 []byte
+	if p1, _, err = key.VerifyStringAndExtract(g.Log, reverseSig); err != nil {
+		err = ReverseSigError{fmt.Sprintf("Failed to verify/extract sig: %s", err)}
+		return err
+	}
+
+	if p1, err = jsonw.Canonicalize(p1); err != nil {
+		err = ReverseSigError{fmt.Sprintf("Failed to canonicalize json: %s", err)}
+		return err
+	}
+
+	// Make a deep copy. It's dangerous to try to mutate this thing
+	// since other goroutines might be accessing it at the same time.
+	var jsonCopy *jsonw.Wrapper
+	if jsonCopy, err = makeDeepCopy(payload); err != nil {
+		err = ReverseSigError{fmt.Sprintf("Failed to copy payload json: %s", err)}
+		return err
+	}
+
+	err = jsonCopy.SetValueAtPath(path, jsonw.NewNil())
+	if err != nil {
+		return err
+	}
+	if p2, err = jsonCopy.Marshal(); err != nil {
+		err = ReverseSigError{fmt.Sprintf("Can't remarshal JSON statement: %s", err)}
+		return err
+	}
+
+	eq := FastByteArrayEq(p1, p2)
+
+	if !eq {
+		err = ReverseSigError{fmt.Sprintf("JSON mismatch: %s != %s",
+			string(p1), string(p2))}
+		return err
+	}
+	return nil
 }

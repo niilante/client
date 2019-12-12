@@ -31,12 +31,25 @@ func NewCmdSimpleFSRead(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.
 		Usage:        "output file contents to standard output",
 		Action: func(c *cli.Context) {
 			cl.ChooseCommand(&CmdSimpleFSRead{Contextified: libkb.NewContextified(g)}, "read", c)
+			cl.SetNoStandalone()
 		},
 		Flags: []cli.Flag{
 			cli.IntFlag{
 				Name:  "b, buffersize",
 				Value: readBufSizeDefault,
 				Usage: "read buffer size",
+			},
+			cli.IntFlag{
+				Name:  "rev",
+				Usage: "a revision number for the KBFS folder",
+			},
+			cli.StringFlag{
+				Name:  "time",
+				Usage: "a time for the KBFS folder (eg \"2018-07-27 22:05\")",
+			},
+			cli.StringFlag{
+				Name:  "reltime, relative-time",
+				Usage: "a relative time for the KBFS folder (eg \"5m\")",
 			},
 		},
 	}
@@ -51,9 +64,9 @@ func (c *CmdSimpleFSRead) Run() error {
 
 	ctx := context.TODO()
 
-	opid, err := cli.SimpleFSMakeOpid(ctx)
-	if err != nil {
-		return err
+	opid, err2 := cli.SimpleFSMakeOpid(ctx)
+	if err2 != nil {
+		return err2
 	}
 	err = cli.SimpleFSOpen(ctx, keybase1.SimpleFSOpenArg{
 		OpID:  opid,
@@ -91,7 +104,7 @@ func (c *CmdSimpleFSRead) Run() error {
 
 func (c *CmdSimpleFSRead) output(data []byte) {
 	ui := c.G().UI.GetTerminalUI()
-	ui.OutputWriter().Write(data)
+	_, _ = ui.UnescapedOutputWriter().Write(data)
 }
 
 // ParseArgv does nothing for this command.
@@ -101,13 +114,21 @@ func (c *CmdSimpleFSRead) ParseArgv(ctx *cli.Context) error {
 
 	c.bufSize = ctx.Int("buffersize")
 
-	if nargs == 1 {
-		c.path = makeSimpleFSPath(c.G(), ctx.Args()[0])
-	} else {
-		err = fmt.Errorf("read requires a path argument")
+	if nargs != 1 {
+		return fmt.Errorf("read requires a path argument")
 	}
 
-	return err
+	// TODO: "rev" should be a real int64, need to update the
+	// `cli` library for that.
+	p, err := makeSimpleFSPathWithArchiveParams(
+		ctx.Args()[0], int64(ctx.Int("rev")), ctx.String("time"),
+		getRelTime(ctx))
+	if err != nil {
+		return err
+	}
+
+	c.path = p
+	return nil
 }
 
 // GetUsage says what this command needs to operate.

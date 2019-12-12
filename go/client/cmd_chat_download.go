@@ -28,6 +28,7 @@ func newCmdChatDownload(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.
 		Action: func(c *cli.Context) {
 			cmd := &CmdChatDownload{Contextified: libkb.NewContextified(g)}
 			cl.ChooseCommand(cmd, "download", c)
+			cl.SetLogForward(libcmdline.LogForwardNone)
 		},
 		Flags: []cli.Flag{
 			cli.BoolFlag{
@@ -59,6 +60,8 @@ func (c *CmdChatDownload) ParseArgv(ctx *cli.Context) error {
 	c.outputFile = ctx.String("outfile")
 	if len(c.outputFile) == 0 {
 		c.outputFile = "-" // stdout
+	} else {
+		c.outputFile = libkb.GetSafePath(c.outputFile)
 	}
 	c.preview = ctx.Bool("preview")
 	c.public = ctx.Bool("public")
@@ -77,7 +80,7 @@ func (c *CmdChatDownload) Run() error {
 		Preview:   c.preview,
 	}
 	h := newChatServiceHandler(c.G())
-	reply := h.DownloadV1(context.Background(), opts)
+	reply := h.DownloadV1(context.Background(), opts, NewChatCLIUI(c.G()))
 	if reply.Error != nil {
 		return errors.New(reply.Error.Message)
 	}

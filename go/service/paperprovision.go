@@ -18,25 +18,20 @@ type PaperProvisionHandler struct {
 
 func NewPaperProvisionHandler(xp rpc.Transporter, g *libkb.GlobalContext) *PaperProvisionHandler {
 	return &PaperProvisionHandler{
-		BaseHandler:  NewBaseHandler(xp),
+		BaseHandler:  NewBaseHandler(g, xp),
 		Contextified: libkb.NewContextified(g),
 	}
 }
 
 func (h *PaperProvisionHandler) PaperProvision(ctx context.Context, arg keybase1.PaperProvisionArg) error {
-
-	ectx := engine.Context{
-		NetContext:  ctx,
+	uis := libkb.UIs{
 		LogUI:       h.getLogUI(arg.SessionID),
 		SecretUI:    h.getSecretUI(arg.SessionID, h.G()),
 		LoginUI:     h.getLoginUI(arg.SessionID),
 		ProvisionUI: h.getProvisionUI(arg.SessionID),
 		SessionID:   arg.SessionID,
 	}
-	eng := engine.NewPaperProvisionEngine(h.G(), arg.Username, arg.DeviceName, arg.PaperKey, arg.KeepPaperKey)
-	err := engine.RunEngine(eng, &ectx)
-	if err != nil {
-		return err
-	}
-	return nil
+	eng := engine.NewPaperProvisionEngine(h.G(), arg.Username, arg.DeviceName, arg.PaperKey)
+	m := libkb.NewMetaContext(ctx, h.G()).WithUIs(uis)
+	return engine.RunEngine2(m, eng)
 }

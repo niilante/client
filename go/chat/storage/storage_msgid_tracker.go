@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 
+	"github.com/keybase/client/go/chat/globals"
 	"github.com/keybase/client/go/chat/utils"
 	"github.com/keybase/client/go/libkb"
 	"github.com/keybase/client/go/protocol/chat1"
@@ -11,18 +12,18 @@ import (
 )
 
 type msgIDTracker struct {
-	libkb.Contextified
+	globals.Contextified
 	utils.DebugLabeler
 }
 
-func newMsgIDTracker(g *libkb.GlobalContext) *msgIDTracker {
+func newMsgIDTracker(g *globals.Context) *msgIDTracker {
 	return &msgIDTracker{
-		Contextified: libkb.NewContextified(g),
-		DebugLabeler: utils.NewDebugLabeler(g, "MsgIDTracker", false),
+		Contextified: globals.NewContextified(g),
+		DebugLabeler: utils.NewDebugLabeler(g.GetLog(), "MsgIDTracker", false),
 	}
 }
 
-func (t *msgIDTracker) makeMaxMsgIDKey(convID chat1.ConversationID, uid gregor1.UID) libkb.DbKey {
+func (t *msgIDTracker) makeDbKey(convID chat1.ConversationID, uid gregor1.UID) libkb.DbKey {
 	return libkb.DbKey{
 		Typ: libkb.DBChatBlocks,
 		Key: fmt.Sprintf("maxMsgID:%s:%s", uid, convID),
@@ -34,7 +35,7 @@ func (t *msgIDTracker) bumpMaxMessageID(
 
 	// No need to use transaction here since the Storage class takes lock.
 
-	maxMsgIDKey := t.makeMaxMsgIDKey(convID, uid)
+	maxMsgIDKey := t.makeDbKey(convID, uid)
 
 	raw, found, err := t.G().LocalChatDb.GetRaw(maxMsgIDKey)
 	if err != nil {
@@ -64,7 +65,7 @@ func (t *msgIDTracker) bumpMaxMessageID(
 func (t *msgIDTracker) getMaxMessageID(
 	ctx context.Context, convID chat1.ConversationID, uid gregor1.UID) (chat1.MessageID, Error) {
 
-	maxMsgIDKey := t.makeMaxMsgIDKey(convID, uid)
+	maxMsgIDKey := t.makeDbKey(convID, uid)
 
 	raw, found, err := t.G().LocalChatDb.GetRaw(maxMsgIDKey)
 	if err != nil {
@@ -80,4 +81,8 @@ func (t *msgIDTracker) getMaxMessageID(
 	}
 
 	return maxMsgID, nil
+}
+
+func (t *msgIDTracker) clear(convID chat1.ConversationID, uid gregor1.UID) error {
+	return t.G().LocalChatDb.Delete(t.makeDbKey(convID, uid))
 }

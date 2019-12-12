@@ -130,7 +130,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/keybase/client/go/libkb"
+	"github.com/keybase/client/go/kbcrypto"
+	"github.com/keybase/client/go/msgpack"
 	"github.com/keybase/go-crypto/ed25519"
 	"golang.org/x/crypto/nacl/secretbox"
 )
@@ -144,7 +145,7 @@ type VerifyKey *[ed25519.PublicKeySize]byte
 const NonceSize = 16
 const SecretboxKeySize = 32
 const SecretboxNonceSize = 24
-const DefaultPlaintextChunkLength = 1 << 20
+const DefaultPlaintextChunkLength int64 = 1 << 20
 
 // ===================================
 // single packet encoding and decoding
@@ -159,7 +160,7 @@ func makeChunkNonce(nonce Nonce, chunkNum uint64) SecretboxNonce {
 	return &ret
 }
 
-func makeSignatureInput(plaintext []byte, encKey SecretboxKey, signaturePrefix libkb.SignaturePrefix, chunkNonce SecretboxNonce) []byte {
+func makeSignatureInput(plaintext []byte, encKey SecretboxKey, signaturePrefix kbcrypto.SignaturePrefix, chunkNonce SecretboxNonce) []byte {
 	// Check that the prefix does not include any null bytes.
 	if bytes.IndexByte([]byte(signaturePrefix), 0x00) != -1 {
 		panic(fmt.Sprintf("signature prefix contains null byte: %q", signaturePrefix))
@@ -177,19 +178,23 @@ func makeSignatureInput(plaintext []byte, encKey SecretboxKey, signaturePrefix l
 	return ret
 }
 
-func getPacketLen(plaintextChunkLen int) int {
+func getPacketLen(plaintextChunkLen int64) int64 {
 	return plaintextChunkLen + secretbox.Overhead + ed25519.SignatureSize
 }
 
-func sealPacket(plaintext []byte, encKey SecretboxKey, signKey SignKey, signaturePrefix libkb.SignaturePrefix, nonce SecretboxNonce) []byte {
+func getPlaintextPacketLen(cipherChunkLen int64) int64 {
+	return cipherChunkLen - (secretbox.Overhead + ed25519.SignatureSize)
+}
+
+func sealPacket(plaintext []byte, encKey SecretboxKey, signKey SignKey, signaturePrefix kbcrypto.SignaturePrefix, nonce SecretboxNonce) []byte {
 	signatureInput := makeSignatureInput(plaintext, encKey, signaturePrefix, nonce)
 	signature := ed25519.Sign(signKey[:], signatureInput)
-	signedChunk := append(signature[:], plaintext...)
+	signedChunk := append(signature, plaintext...)
 	packet := secretbox.Seal(nil, signedChunk, nonce, encKey)
 	return packet
 }
 
-func openPacket(packet []byte, encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix libkb.SignaturePrefix, nonce SecretboxNonce) ([]byte, error) {
+func openPacket(packet []byte, encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix kbcrypto.SignaturePrefix, nonce SecretboxNonce) ([]byte, error) {
 	signedChunk, secretboxValid := secretbox.Open(nil, packet, nonce, encKey)
 	if !secretboxValid {
 		return nil, NewError(BadSecretbox, "secretbox failed to open")
@@ -215,14 +220,14 @@ func openPacket(packet []byte, encKey SecretboxKey, verifyKey VerifyKey, signatu
 type Encoder struct {
 	encKey            SecretboxKey
 	signKey           SignKey
-	signaturePrefix   libkb.SignaturePrefix
+	signaturePrefix   kbcrypto.SignaturePrefix
 	nonce             Nonce
 	buf               []byte
 	chunkNum          uint64
-	plaintextChunkLen int
+	plaintextChunkLen int64
 }
 
-func NewEncoder(encKey SecretboxKey, signKey SignKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce) *Encoder {
+func NewEncoder(encKey SecretboxKey, signKey SignKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) *Encoder {
 	return &Encoder{
 		encKey:            encKey,
 		signKey:           signKey,
@@ -234,9 +239,9 @@ func NewEncoder(encKey SecretboxKey, signKey SignKey, signaturePrefix libkb.Sign
 	}
 }
 
-func (e *Encoder) sealOnePacket(plaintextChunkLen int) []byte {
+func (e *Encoder) sealOnePacket(plaintextChunkLen int64) []byte {
 	// Note that this function handles the `plaintextChunkLen == 0` case.
-	if plaintextChunkLen > len(e.buf) {
+	if plaintextChunkLen > int64(len(e.buf)) {
 		panic("encoder tried to seal a packet that was too big")
 	}
 	plaintextChunk := e.buf[0:plaintextChunkLen]
@@ -256,7 +261,7 @@ func (e *Encoder) Write(plaintext []byte) []byte {
 	e.buf = append(e.buf, plaintext...)
 	var output []byte
 	// If buf is big enough to make new packets, make as many as we can.
-	for len(e.buf) >= e.plaintextChunkLen {
+	for int64(len(e.buf)) >= e.plaintextChunkLen {
 		packet := e.sealOnePacket(e.plaintextChunkLen)
 		output = append(output, packet...)
 	}
@@ -267,14 +272,14 @@ func (e *Encoder) Write(plaintext []byte) []byte {
 // as a short chunk. This should only be called once, and after that you can't
 // use this encoder again.
 func (e *Encoder) Finish() []byte {
-	if len(e.buf) >= e.plaintextChunkLen {
+	if int64(len(e.buf)) >= e.plaintextChunkLen {
 		panic("encoder buffer has more bytes than expected")
 	}
-	packet := e.sealOnePacket(len(e.buf))
+	packet := e.sealOnePacket(int64(len(e.buf)))
 	return packet
 }
 
-func (e *Encoder) ChangePlaintextChunkLenForTesting(plaintextChunkLen int) {
+func (e *Encoder) ChangePlaintextChunkLenForTesting(plaintextChunkLen int64) {
 	e.plaintextChunkLen = plaintextChunkLen
 }
 
@@ -285,15 +290,15 @@ func (e *Encoder) ChangePlaintextChunkLenForTesting(plaintextChunkLen int) {
 type Decoder struct {
 	encKey          SecretboxKey
 	verifyKey       VerifyKey
-	signaturePrefix libkb.SignaturePrefix
+	signaturePrefix kbcrypto.SignaturePrefix
 	nonce           Nonce
 	buf             []byte
 	chunkNum        uint64
 	err             error
-	packetLen       int
+	packetLen       int64
 }
 
-func NewDecoder(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce) *Decoder {
+func NewDecoder(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) *Decoder {
 	return &Decoder{
 		encKey:          encKey,
 		verifyKey:       verifyKey,
@@ -306,8 +311,12 @@ func NewDecoder(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix libkb.
 	}
 }
 
-func (d *Decoder) openOnePacket(packetLen int) ([]byte, error) {
-	if packetLen > len(d.buf) {
+func (d *Decoder) setChunkNum(num uint64) {
+	d.chunkNum = num
+}
+
+func (d *Decoder) openOnePacket(packetLen int64) ([]byte, error) {
+	if packetLen > int64(len(d.buf)) {
 		panic("decoder tried to open a packet that was too big")
 	}
 	packet := d.buf[0:packetLen]
@@ -337,7 +346,7 @@ func (d *Decoder) Write(ciphertext []byte) ([]byte, error) {
 	// We assume that every packet other than the last (which we handle in
 	// Finish) is the same length, which makes this loop very simple.
 	var output []byte
-	for len(d.buf) >= d.packetLen {
+	for int64(len(d.buf)) >= d.packetLen {
 		var plaintext []byte
 		plaintext, d.err = d.openOnePacket(d.packetLen)
 		if d.err != nil {
@@ -357,18 +366,18 @@ func (d *Decoder) Finish() ([]byte, error) {
 	if d.err != nil {
 		return nil, d.err
 	}
-	if len(d.buf) >= d.packetLen {
+	if int64(len(d.buf)) >= d.packetLen {
 		panic("decoder buffer has more bytes than expected")
 	}
 	// If we've been truncated at a packet boundary, this open will fail on a
 	// simple length check. If we've been truncated in the middle of a packet,
 	// this open will fail to validate.
 	var plaintext []byte
-	plaintext, d.err = d.openOnePacket(len(d.buf))
+	plaintext, d.err = d.openOnePacket(int64(len(d.buf)))
 	return plaintext, d.err
 }
 
-func (d *Decoder) ChangePlaintextChunkLenForTesting(plaintextChunkLen int) {
+func (d *Decoder) ChangePlaintextChunkLenForTesting(plaintextChunkLen int64) {
 	d.packetLen = getPacketLen(plaintextChunkLen)
 }
 
@@ -465,14 +474,14 @@ func (r *codecReadWrapper) Read(callerBuf []byte) (int, error) {
 
 // NewEncodingReader creates a new streaming encoder.
 // The signaturePrefix argument must not contain the null container.
-func NewEncodingReader(encKey SecretboxKey, signKey SignKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce, innerReader io.Reader) io.Reader {
+func NewEncodingReader(encKey SecretboxKey, signKey SignKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce, innerReader io.Reader) io.Reader {
 	return &codecReadWrapper{
 		innerReader: innerReader,
 		codec:       &encoderCodecShim{NewEncoder(encKey, signKey, signaturePrefix, nonce)},
 	}
 }
 
-func NewDecodingReader(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce, innerReader io.Reader) io.Reader {
+func NewDecodingReader(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce, innerReader io.Reader) io.Reader {
 	return &codecReadWrapper{
 		innerReader: innerReader,
 		codec:       NewDecoder(encKey, verifyKey, signaturePrefix, nonce),
@@ -480,10 +489,45 @@ func NewDecodingReader(encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix
 }
 
 // =============================
+// chunk helpers
+// =============================
+
+type chunkSpec struct {
+	index                  int64
+	ptStart, ptEnd         int64
+	cipherStart, cipherEnd int64
+}
+
+func chunkFromIndex(index int64) (res chunkSpec) {
+	res.index = index
+	res.ptStart = res.index * DefaultPlaintextChunkLength
+	res.ptEnd = res.ptStart + DefaultPlaintextChunkLength
+	res.cipherStart = res.index * getPacketLen(DefaultPlaintextChunkLength)
+	res.cipherEnd = res.cipherStart + getPacketLen(DefaultPlaintextChunkLength)
+	return res
+}
+
+func getChunksInRange(plaintextBegin, plaintextEnd, plaintextLen int64) (res []chunkSpec) {
+	beginChunk := chunkFromIndex(plaintextBegin / DefaultPlaintextChunkLength)
+	endChunk := chunkFromIndex(plaintextEnd / DefaultPlaintextChunkLength)
+	cipherLen := GetSealedSize(plaintextLen)
+	for i := beginChunk.index; i <= endChunk.index; i++ {
+		res = append(res, chunkFromIndex(i))
+	}
+	if res[len(res)-1].ptEnd >= plaintextLen {
+		res[len(res)-1].ptEnd = plaintextLen
+	}
+	if res[len(res)-1].cipherEnd >= cipherLen {
+		res[len(res)-1].cipherEnd = cipherLen
+	}
+	return res
+}
+
+// =============================
 // all-at-once wrapper functions
 // =============================
 
-func GetSealedSize(plaintextLen int) int {
+func GetSealedSize(plaintextLen int64) int64 {
 	// All the full packets.
 	fullChunks := plaintextLen / DefaultPlaintextChunkLength
 	totalLen := fullChunks * getPacketLen(DefaultPlaintextChunkLength)
@@ -493,15 +537,23 @@ func GetSealedSize(plaintextLen int) int {
 	return totalLen
 }
 
+func GetPlaintextSize(cipherLen int64) int64 {
+	fullChunks := cipherLen / getPacketLen(DefaultPlaintextChunkLength)
+	totalLen := fullChunks * DefaultPlaintextChunkLength
+	remainingCiphertext := cipherLen % getPacketLen(DefaultPlaintextChunkLength)
+	totalLen += getPlaintextPacketLen(remainingCiphertext)
+	return totalLen
+}
+
 // SealWhole seals all at once using the streaming encoding.
-func SealWhole(plaintext []byte, encKey SecretboxKey, signKey SignKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce) []byte {
+func SealWhole(plaintext []byte, encKey SecretboxKey, signKey SignKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) []byte {
 	encoder := NewEncoder(encKey, signKey, signaturePrefix, nonce)
 	output := encoder.Write(plaintext)
 	output = append(output, encoder.Finish()...)
 	return output
 }
 
-func OpenWhole(sealed []byte, encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix libkb.SignaturePrefix, nonce Nonce) ([]byte, error) {
+func OpenWhole(sealed []byte, encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) ([]byte, error) {
 	decoder := NewDecoder(encKey, verifyKey, signaturePrefix, nonce)
 	output, err := decoder.Write(sealed)
 	if err != nil {
@@ -514,6 +566,63 @@ func OpenWhole(sealed []byte, encKey SecretboxKey, verifyKey VerifyKey, signatur
 	return append(output, moreOutput...), nil
 }
 
+// include verification of associated data. see
+// https://en.wikipedia.org/wiki/Authenticated_encryption#Authenticated_encryption_with_associated_data_(AEAD)
+
+type AEADMessage struct {
+	Version       int               `codec:"v" json:"v"`
+	AssocDataHash [sha512.Size]byte `codec:"a" json:"a"`
+	Message       []byte            `codec:"m" json:"m"`
+}
+
+// SealWithAssociatedData is a wrapper around SealWhole which adds an associatedData object
+// (see AEAD ciphers) which must be message-packable into bytes. This exact object is required
+// to call OpenWithAssociatedData on the ciphertext.
+func SealWithAssociatedData(msg []byte, associatedData interface{}, encKey SecretboxKey, signKey SignKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) (ret []byte, err error) {
+	adEncoded, err := msgpack.Encode(associatedData)
+	if err != nil {
+		return ret, err
+	}
+	adHash := sha512.Sum512(adEncoded)
+	aeadMsg := AEADMessage{
+		Version:       1,
+		AssocDataHash: adHash,
+		Message:       msg,
+	}
+	clearBytes, err := msgpack.Encode(aeadMsg)
+	if err != nil {
+		return ret, err
+	}
+	return SealWhole(clearBytes, encKey, signKey, signaturePrefix, nonce), nil
+}
+
+func OpenWithAssociatedData(sealed []byte, associatedData interface{}, encKey SecretboxKey, verifyKey VerifyKey, signaturePrefix kbcrypto.SignaturePrefix, nonce Nonce) (ret []byte, err error) {
+	clearBytes, err := OpenWhole(sealed, encKey, verifyKey, signaturePrefix, nonce)
+	if err != nil {
+		return ret, err
+	}
+	var aeadMessage AEADMessage
+	err = msgpack.Decode(&aeadMessage, clearBytes)
+	if err != nil {
+		return ret, err
+	}
+	if aeadMessage.Version != 1 {
+		return ret, NewError(BadSecretbox, "can only accept AEAD messages with version 1, but got %d", aeadMessage.Version)
+	}
+	actualADHash := aeadMessage.AssocDataHash
+	msg := aeadMessage.Message
+
+	adEncoded, err := msgpack.Encode(associatedData)
+	if err != nil {
+		return ret, err
+	}
+	adHash := sha512.Sum512(adEncoded)
+	if !bytes.Equal(adHash[:], actualADHash[:]) {
+		return ret, NewError(AssociatedDataMismatch, "fingerprint of associated data did not match")
+	}
+	return msg, nil
+}
+
 // ======
 // errors
 // ======
@@ -524,6 +633,7 @@ const (
 	BadSecretbox ErrorType = iota
 	ShortSignature
 	BadSignature
+	AssociatedDataMismatch
 )
 
 type Error struct {

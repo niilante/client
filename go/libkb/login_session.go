@@ -29,7 +29,7 @@ type LoginSession struct {
 	Contextified
 }
 
-func NewLoginSession(emailOrUsername string, g *GlobalContext) *LoginSession {
+func NewLoginSession(g *GlobalContext, emailOrUsername string) *LoginSession {
 	return &LoginSession{
 		sessionFor:   emailOrUsername,
 		Contextified: NewContextified(g),
@@ -37,8 +37,8 @@ func NewLoginSession(emailOrUsername string, g *GlobalContext) *LoginSession {
 }
 
 // Upon signup, a login session is created with a generated salt.
-func NewLoginSessionWithSalt(emailOrUsername string, salt []byte, g *GlobalContext) *LoginSession {
-	ls := NewLoginSession(emailOrUsername, g)
+func NewLoginSessionWithSalt(g *GlobalContext, emailOrUsername string, salt []byte) *LoginSession {
+	ls := NewLoginSession(g, emailOrUsername)
 	ls.salt = salt
 	// XXX are these right?  is this just so the salt can be retrieved?
 	ls.loaded = true
@@ -146,12 +146,15 @@ func (s *LoginSession) Dump() {
 	fmt.Printf("\n")
 }
 
-func (s *LoginSession) Load() error {
+func (s *LoginSession) Load(m MetaContext) error {
+	if s == nil {
+		return fmt.Errorf("LoginSession is nil")
+	}
 	if s.loaded && !s.cleared {
 		return fmt.Errorf("LoginSession already loaded for %s", s.sessionFor)
 	}
 
-	res, err := s.G().API.Get(APIArg{
+	res, err := m.G().API.Get(m, APIArg{
 		Endpoint:    "getsalt",
 		SessionType: APISessionTypeNONE,
 		Args: HTTPArgs{
@@ -191,4 +194,28 @@ func (s *LoginSession) Load() error {
 	s.createTime = s.G().Clock().Now()
 
 	return nil
+}
+
+func LookupSaltForUID(m MetaContext, uid keybase1.UID) (salt []byte, err error) {
+	defer m.Trace(fmt.Sprintf("GetSaltForUID(%s)", uid), func() error { return err })()
+	res, err := m.G().API.Get(m, APIArg{
+		Endpoint:    "getsalt",
+		SessionType: APISessionTypeNONE,
+		Args: HTTPArgs{
+			"uid": S{Val: uid.String()},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var shex string
+	shex, err = res.Body.AtKey("salt").GetString()
+	if err != nil {
+		return nil, err
+	}
+	salt, err = hex.DecodeString(shex)
+	if err != nil {
+		return nil, err
+	}
+	return salt, err
 }

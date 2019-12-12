@@ -1,0 +1,181 @@
+{
+  "protocol": "NotifyTeam",
+  "imports": [
+    {
+      "path": "common.avdl",
+      "type": "idl"
+    }
+  ],
+  "types": [
+    {
+      "type": "record",
+      "name": "TeamChangeSet",
+      "fields": [
+        {
+          "type": "boolean",
+          "name": "membershipChanged"
+        },
+        {
+          "type": "boolean",
+          "name": "keyRotated"
+        },
+        {
+          "type": "boolean",
+          "name": "renamed"
+        },
+        {
+          "type": "boolean",
+          "name": "misc"
+        }
+      ]
+    },
+    {
+      "type": "enum",
+      "name": "AvatarUpdateType",
+      "symbols": [
+        "NONE_0",
+        "USER_1",
+        "TEAM_2"
+      ]
+    }
+  ],
+  "messages": {
+    "teamChangedByID": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "TeamID"
+        },
+        {
+          "name": "latestSeqno",
+          "type": "Seqno"
+        },
+        {
+          "name": "implicitTeam",
+          "type": "boolean"
+        },
+        {
+          "name": "changes",
+          "type": "TeamChangeSet"
+        },
+        {
+          "name": "latestHiddenSeqno",
+          "type": "Seqno"
+        },
+        {
+          "name": "latestOffchainSeqno",
+          "type": "Seqno"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamChangedByName": {
+      "request": [
+        {
+          "name": "teamName",
+          "type": "string"
+        },
+        {
+          "name": "latestSeqno",
+          "type": "Seqno"
+        },
+        {
+          "name": "implicitTeam",
+          "type": "boolean"
+        },
+        {
+          "name": "changes",
+          "type": "TeamChangeSet"
+        },
+        {
+          "name": "latestHiddenSeqno",
+          "type": "Seqno"
+        },
+        {
+          "name": "latestOffchainSeqno",
+          "type": "Seqno"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamDeleted": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "TeamID"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamAbandoned": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "TeamID"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamExit": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "TeamID"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "newlyAddedToTeam": {
+      "request": [
+        {
+          "name": "teamID",
+          "type": "TeamID"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamRoleMapChanged": {
+      "request": [
+        {
+          "name": "newVersion",
+          "type": "UserTeamVersion"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "avatarUpdated": {
+      "request": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "formats",
+          "type": {
+            "type": "array",
+            "items": "AvatarFormat"
+          }
+        },
+        {
+          "name": "typ",
+          "type": "AvatarUpdateType"
+        }
+      ],
+      "response": null,
+      "oneway": true
+    },
+    "teamMetadataUpdate": {
+      "request": [],
+      "response": null,
+      "oneway": true
+    }
+  },
+  "namespace": "keybase.1"
+}

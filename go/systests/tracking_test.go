@@ -11,6 +11,7 @@ import (
 	keybase1 "github.com/keybase/client/go/protocol/keybase1"
 	"github.com/keybase/client/go/service"
 	"github.com/keybase/go-framed-msgpack-rpc/rpc"
+	"github.com/stretchr/testify/require"
 	context "golang.org/x/net/context"
 )
 
@@ -25,54 +26,57 @@ func (n *trackingUI) GetIdentifyTrackUI() libkb.IdentifyUI {
 type identifyUI struct {
 }
 
-func (*identifyUI) Confirm(*keybase1.IdentifyOutcome) (keybase1.ConfirmResult, error) {
+func (*identifyUI) Confirm(libkb.MetaContext, *keybase1.IdentifyOutcome) (keybase1.ConfirmResult, error) {
 	return keybase1.ConfirmResult{
 		IdentityConfirmed: true,
 		RemoteConfirmed:   true,
 	}, nil
 }
-func (*identifyUI) Start(string, keybase1.IdentifyReason, bool) error {
+func (*identifyUI) Start(libkb.MetaContext, string, keybase1.IdentifyReason, bool) error {
 	return nil
 }
-func (*identifyUI) FinishWebProofCheck(keybase1.RemoteProof, keybase1.LinkCheckResult) error {
+func (*identifyUI) FinishWebProofCheck(libkb.MetaContext, keybase1.RemoteProof, keybase1.LinkCheckResult) error {
 	return nil
 }
-func (*identifyUI) FinishSocialProofCheck(keybase1.RemoteProof, keybase1.LinkCheckResult) error {
+func (*identifyUI) FinishSocialProofCheck(libkb.MetaContext, keybase1.RemoteProof, keybase1.LinkCheckResult) error {
 	return nil
 }
-func (*identifyUI) DisplayCryptocurrency(keybase1.Cryptocurrency) error {
+func (*identifyUI) DisplayCryptocurrency(libkb.MetaContext, keybase1.Cryptocurrency) error {
 	return nil
 }
-func (*identifyUI) DisplayKey(keybase1.IdentifyKey) error {
+func (*identifyUI) DisplayStellarAccount(libkb.MetaContext, keybase1.StellarAccount) error {
 	return nil
 }
-func (*identifyUI) ReportLastTrack(*keybase1.TrackSummary) error {
+func (*identifyUI) DisplayKey(libkb.MetaContext, keybase1.IdentifyKey) error {
 	return nil
 }
-func (*identifyUI) LaunchNetworkChecks(*keybase1.Identity, *keybase1.User) error {
+func (*identifyUI) ReportLastTrack(libkb.MetaContext, *keybase1.TrackSummary) error {
 	return nil
 }
-func (*identifyUI) DisplayTrackStatement(string) error {
+func (*identifyUI) LaunchNetworkChecks(libkb.MetaContext, *keybase1.Identity, *keybase1.User) error {
 	return nil
 }
-func (*identifyUI) DisplayUserCard(keybase1.UserCard) error {
+func (*identifyUI) DisplayTrackStatement(libkb.MetaContext, string) error {
 	return nil
 }
-func (*identifyUI) ReportTrackToken(keybase1.TrackToken) error {
+func (*identifyUI) DisplayUserCard(libkb.MetaContext, keybase1.UserCard) error {
+	return nil
+}
+func (*identifyUI) ReportTrackToken(libkb.MetaContext, keybase1.TrackToken) error {
 	return nil
 }
 func (*identifyUI) SetStrict(b bool) {}
-func (*identifyUI) Cancel() error {
+func (*identifyUI) Cancel(libkb.MetaContext) error {
 	return nil
 }
-func (*identifyUI) Finish() error {
+func (*identifyUI) Finish(libkb.MetaContext) error {
 	return nil
 }
-func (*identifyUI) Dismiss(string, keybase1.DismissReason) error {
+func (*identifyUI) Dismiss(libkb.MetaContext, string, keybase1.DismissReason) error {
 	return nil
 }
 
-func (*identifyUI) DisplayTLFCreateWithInvite(keybase1.DisplayTLFCreateWithInviteArg) error {
+func (*identifyUI) DisplayTLFCreateWithInvite(libkb.MetaContext, keybase1.DisplayTLFCreateWithInviteArg) error {
 	return nil
 }
 
@@ -93,17 +97,24 @@ func (h *trackingNotifyHandler) TrackingChanged(_ context.Context, arg keybase1.
 	return nil
 }
 
+func (h *trackingNotifyHandler) TrackingInfo(context.Context, keybase1.TrackingInfoArg) error {
+	return nil
+}
+
+func (h *trackingNotifyHandler) NotifyUserBlocked(context.Context, keybase1.UserBlockedSummary) error {
+	return nil
+}
+
 func TestTrackingNotifications(t *testing.T) {
 	tc := setupTest(t, "signup")
+	defer tc.Cleanup()
 	tc2 := cloneContext(tc)
+	defer tc2.Cleanup()
 	tc5 := cloneContext(tc)
-
-	libkb.G.LocalDb = nil
+	defer tc5.Cleanup()
 
 	// Hack the various portions of the service that aren't
 	// properly contextified.
-
-	defer tc.Cleanup()
 
 	stopCh := make(chan error)
 	svc := service.NewService(tc.G, false)
@@ -133,8 +144,6 @@ func TestTrackingNotifications(t *testing.T) {
 	if err := signup.Run(); err != nil {
 		t.Fatal(err)
 	}
-	tc2.G.Log.Debug("Login State: %v", tc2.G.LoginState())
-
 	nh := newTrackingNotifyHandler()
 
 	// Launch the server that will listen for tracking notifications.
@@ -148,12 +157,9 @@ func TestTrackingNotifications(t *testing.T) {
 			return err
 		}
 		ncli := keybase1.NotifyCtlClient{Cli: cli}
-		if err = ncli.SetNotifications(context.TODO(), keybase1.NotificationChannels{
+		return ncli.SetNotifications(context.TODO(), keybase1.NotificationChannels{
 			Tracking: true,
-		}); err != nil {
-			return err
-		}
-		return nil
+		})
 	}
 
 	// Actually launch it in the background
@@ -212,12 +218,75 @@ func TestTrackingNotifications(t *testing.T) {
 		}
 	}
 
-	if err := client.CtlServiceStop(tc2.G); err != nil {
+	if err := CtlStop(tc2.G); err != nil {
 		t.Fatal(err)
 	}
 
 	// If the server failed, it's also an error
 	if err := <-stopCh; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestV2Compressed(t *testing.T) {
+	tt := newTeamTester(t)
+	defer tt.cleanup()
+
+	ctx := context.TODO()
+
+	alice := tt.addUser("alice")
+	aliceG := alice.tc.G
+
+	tt.addUser("wong")
+	wong := tt.users[1]
+	wongG := wong.tc.G
+	upk, err := wongG.GetUPAKLoader().LoadUserPlusKeys(ctx, wong.uid, "")
+	require.NoError(t, err)
+
+	iuiW := newSimpleIdentifyUI()
+	attachIdentifyUI(t, wongG, iuiW)
+	iuiW.confirmRes = keybase1.ConfirmResult{IdentityConfirmed: true, RemoteConfirmed: true, AutoConfirmed: true}
+
+	idAndListFollowers := func(username string) {
+		cli1, err := client.GetIdentifyClient(aliceG)
+		require.NoError(t, err)
+		_, err = cli1.Identify2(ctx, keybase1.Identify2Arg{
+			UserAssertion:    username,
+			IdentifyBehavior: keybase1.TLFIdentifyBehavior_CHAT_GUI,
+		})
+		require.NoError(t, err)
+
+		cli2, err := client.GetUserClient(aliceG)
+		require.NoError(t, err)
+		_, err = cli2.ListTrackers2(ctx, keybase1.ListTrackers2Arg{
+			Assertion: username,
+			Reverse:   false,
+		})
+		require.NoError(t, err)
+	}
+
+	aliceG.ProofCache.DisableDisk()
+	wongG.ProofCache.DisableDisk()
+	// The track/untrack statements will be stubbed links, the proveRooter will
+	// not
+	wong.track(alice.username)
+	// ensure we don't stub a non-stubable
+	wong.proveRooter()
+	idAndListFollowers(wong.username)
+
+	// ensure we don't stub tail since we need to check against the merkle tree
+	wong.untrack(alice.username)
+	idAndListFollowers(wong.username)
+
+	wong.reset()
+	wong.loginAfterReset()
+	tt.addUser("bob")
+	bob := tt.users[2]
+	bobG := bob.tc.G
+	for _, dk := range upk.DeviceKeys {
+		user, upak, _, err := bobG.GetUPAKLoader().LoadKeyV2(ctx, wong.uid, dk.KID)
+		require.NoError(t, err)
+		require.NotNil(t, user)
+		require.NotNil(t, upak)
 	}
 }
